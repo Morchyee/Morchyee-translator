@@ -16,7 +16,11 @@ public class Kikitan : IDisposable
     private List<string[]> _queue = [];
     private readonly object _queueLock = new object();
 
-    private bool _running;
+    private readonly object _recognitionLock = new();
+    private readonly CancellationTokenSource _workerCancellation = new();
+    private Task? _workerTask;
+    private volatile bool _running;
+    private bool _disposed;
     private bool _isLoopback;
     
     public event OnRecognizerStatus? OnRecognizerStatusChanged;
@@ -39,28 +43,42 @@ public class Kikitan : IDisposable
 
     public void Start()
     {
-        _recognizer.Start(_isLoopback ? AppConfig.ConfigObject.TargetLanguage : AppConfig.ConfigObject.SourceLanguage, _errorHandler);
+        if (_disposed) throw new ObjectDisposedException(nameof(Kikitan));
         _running = true;
+        _recognizer.Start(_isLoopback ? AppConfig.ConfigObject.TargetLanguage : AppConfig.ConfigObject.SourceLanguage, _errorHandler);
         Log.Information($"[KKTN] Recognizer start result: desktop={_isLoopback}, status={_recognizer.Status()}");
         
-        Task.Run(QueueWorker);
+        _workerTask = QueueWorkerAsync(_workerCancellation.Token);
     }
 
     public void Stop()
     {
-        _recognizer.Stop();
         _running = false;
+        _recognizer.Stop();
+        _workerCancellation.Cancel();
+        _workerTask?.GetAwaiter().GetResult();
+        lock (_recognitionLock) { }
         
         Log.Information("[KKTN] Kikitan has stopped");
     }
 
     private void OnRecognition(string text, bool final)
     {
+        lock (_recognitionLock)
+        {
+            if (!_running) return;
+            ProcessRecognition(text, final);
+        }
+    }
+
+    private void ProcessRecognition(string text, bool final)
+    {
         if (final) Log.Debug($"[KKTN] Final recognition received: desktop={_isLoopback}, chars={text.Length}, running={_running}");
         if (AppConfig.ConfigObject.Recognizer == 2)
         {
             foreach (var output in _outputs)
             {
+                if (!_running) return;
                 output.Send(text.Split("|")[0], text.Split("|")[1], final);
             }
 
@@ -69,6 +87,7 @@ public class Kikitan : IDisposable
         
         foreach (var output in _outputs)
         {
+            if (!_running) return;
             output.Send(text, "", false);
         }
 
@@ -81,6 +100,7 @@ public class Kikitan : IDisposable
             var translated = AppConfig.ConfigObject.SpeechToTextOnly ? "" : _isLoopback ? _translator.Translate(text, AppConfig.ConfigObject.TargetLanguage, AppConfig.ConfigObject.SourceLanguage) : _translator.Translate(text, AppConfig.ConfigObject.SourceLanguage, AppConfig.ConfigObject.TargetLanguage);
         
             Log.Debug($"[KKTN] Translation completed: desktop={_isLoopback}, elapsedMs={translationTimer.ElapsedMilliseconds}, resultChars={translated?.Length}, hasResult={translated != null}");
+            if (!_running) return;
             if (translated == null) Log.Warning($"[KKTN] No translation result; final output skipped: desktop={_isLoopback}");
             if (translated != null)
             {
@@ -103,33 +123,41 @@ public class Kikitan : IDisposable
 
     private void OnRecognizerStatus(RecognizerStatus status) => OnRecognizerStatusChanged?.Invoke(status);
 
-    private async void QueueWorker()
+    private async Task QueueWorkerAsync(CancellationToken cancellationToken)
     {
-        while (_running)
+        try
         {
-            if (_queue.Count == 0)
+            while (!cancellationToken.IsCancellationRequested)
             {
-                await Task.Delay(50);
-                
-                continue;
-            }
+                string[]? texts = null;
+                lock (_queueLock)
+                {
+                    if (_queue.Count > 0)
+                    {
+                        texts = _queue[0];
+                        _queue.RemoveAt(0);
+                    }
+                }
+                if (texts == null)
+                {
+                    await Task.Delay(50, cancellationToken);
+                    continue;
+                }
 
-            var textDelayTime = 0;
-
-            lock (_queueLock)
-            {
-                var texts = _queue.First();
-                _queue.RemoveAt(0);
-            
                 Log.Debug($"[KKTN] Processing delayed output: desktop={_isLoopback}, remaining={_queue.Count}, sourceChars={texts[0].Length}, translationChars={texts[1].Length}");
-            
+                if (cancellationToken.IsCancellationRequested) break;
                 foreach (var output in _outputs.Where(v => v.IsDelayed())) output.Send(texts[0], texts[1], true);
                 Log.Verbose($"[KKTN] Waiting {texts[1].Length * AppConfig.ConfigObject.ChatboxWaitPerCharMs}ms...");
-
-                textDelayTime = texts[1].Length * AppConfig.ConfigObject.ChatboxWaitPerCharMs;
+                await Task.Delay(texts[1].Length * AppConfig.ConfigObject.ChatboxWaitPerCharMs, cancellationToken);
             }
-            
-            await Task.Delay(textDelayTime);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception e)
+        {
+            Log.Error(e, $"[KKTN] Delayed output failed: desktop={_isLoopback}");
+            _errorHandler.OnError($"Error while sending output: {e.Message}");
         }
     }
 
@@ -137,8 +165,28 @@ public class Kikitan : IDisposable
 
     public void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
         _running = false;
-        _recognizer.Dispose();
-        _translator.Dispose();
+        _recognizer.OnRecognitionReceived -= OnRecognition;
+        _recognizer.OnRecognizerStatusChanged -= OnRecognizerStatus;
+        _workerCancellation.Cancel();
+        try
+        {
+            _recognizer.Dispose();
+        }
+        finally
+        {
+            try
+            {
+                _workerTask?.GetAwaiter().GetResult();
+                lock (_recognitionLock) { }
+            }
+            finally
+            {
+                _translator.Dispose();
+                _workerCancellation.Dispose();
+            }
+        }
     }
 }

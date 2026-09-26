@@ -19,6 +19,9 @@ public class Bing : IRecognizer
 
     private WebsocketClient _client;
     private ICapture _capture;
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly List<Task> _callbackTasks = [];
+    private volatile bool _disposed;
     
     private RecognizerStatus _status;
 
@@ -52,6 +55,7 @@ public class Bing : IRecognizer
     
     public void Start(string language, IErrorHandler errorHandler)
     {
+        if (_disposed) return;
         Log.Information($"[BING] Starting recognizer: capture={_capture.GetType().Name}, language={language}, status={_status}");
         ChangeRecognizerStatus(RecognizerStatus.Connecting);
         
@@ -67,14 +71,17 @@ public class Bing : IRecognizer
 
         _client = new WebsocketClient(new Uri(url), factory);
         
-        _client.ReconnectionHappened.Subscribe(async info =>
+        _client.ReconnectionHappened.Subscribe(info => RunCallback(async () =>
         {
+            if (_disposed) return;
             Log.Information($"[BING] Connection event: type={info.Type}, status={_status}, capture={_capture.GetType().Name}");
             if (_status == RecognizerStatus.Running) return;
             
             Reset();
             Log.Information($"[BING] Connection setup started: connection={_connectionId}, request={_currentRequestId}");
-            await Task.Delay(100);
+            try { await Task.Delay(100, _lifetime.Token); }
+            catch (OperationCanceledException) { return; }
+            if (_disposed) return;
             
             var configPayload = new
             {
@@ -110,14 +117,19 @@ public class Bing : IRecognizer
                 }
             };
 
-            await Task.Delay(100);
+            try { await Task.Delay(100, _lifetime.Token); }
+            catch (OperationCanceledException) { return; }
+            if (_disposed) return;
             _client.Send(CreateTextMessage("speech.context", JsonConvert.SerializeObject(contextPayload), null, _currentRequestId));
             Log.Verbose("[BING] Speech context has been sent");
             
-            await Task.Delay(100);
+            try { await Task.Delay(100, _lifetime.Token); }
+            catch (OperationCanceledException) { return; }
+            if (_disposed) return;
             _client.Send(CreateBinaryMessage("audio", $"{_streamIdCounter}", _currentRequestId, CreateWavHeader(), "audio/x-wav"));
             Log.Verbose("[BING] Wav header has been sent");
 
+            if (_disposed) return;
             if (!_capture.Start())
             {
                 Log.Error("[BING] Unable to start capture!");
@@ -125,12 +137,14 @@ public class Bing : IRecognizer
 
                 return;
             }
+            if (_disposed) return;
             
             Log.Information("[BING] Bing recognizer has started");
-        });
+        }));
         
         _client.MessageReceived.Subscribe(message =>
         {
+            if (_disposed) return;
             var (path, json) = ParseWebsocketMessage(message.Text!);
             switch (path)
             {
@@ -143,36 +157,47 @@ public class Bing : IRecognizer
                     break;
                 case "turn.end":
                     Log.Debug($"[BING] Turn ended: connection={_connectionId}, request={_currentRequestId}, stream={_streamIdCounter}, audioBytesSent={_bytesSend}");
-                    RestartTurn();
+                    RunCallback(RestartTurn);
                     
                     break;
                 case "speech.hypothesis":
                     using (SpeechData? data = JsonConvert.DeserializeObject<SpeechData>(json))
                     {
-                        if (data?.Text != null) Task.Run(() => OnRecognitionReceived?.Invoke(data.Text, false));
+                        if (data?.Text != null)
+                        {
+                            var text = data.Text;
+                            RunCallback(() => { if (!_disposed) OnRecognitionReceived?.Invoke(text, false); return Task.CompletedTask; });
+                        }
                     }
                     
                     break;
                 case "speech.phrase":
                     using (SpeechData? data = JsonConvert.DeserializeObject<SpeechData>(json))
                     {
-                        if (data?.DisplayText != null) Task.Run(() => OnRecognitionReceived?.Invoke(data.DisplayText, true));
+                        if (data?.DisplayText != null)
+                        {
+                            var text = data.DisplayText;
+                            RunCallback(() => { if (!_disposed) OnRecognitionReceived?.Invoke(text, true); return Task.CompletedTask; });
+                        }
                     }
                     
                     break;
             }
         });
-        _client.DisconnectionHappened.Subscribe(async info =>
+        _client.DisconnectionHappened.Subscribe(info => RunCallback(async () =>
         {
+            if (_disposed) return;
             Log.Error($"[BING] Websocket connection has closed. Reason: {info.Type}");
             ChangeRecognizerStatus(RecognizerStatus.NotStarted);
 
             if (info.Type != DisconnectionType.ByServer) return;
             Log.Information($"[BING] Server disconnect; restart scheduled in 1000ms: connection={_connectionId}, capture={_capture.GetType().Name}");
-            await Task.Delay(1000);
+            try { await Task.Delay(1000, _lifetime.Token); }
+            catch (OperationCanceledException) { return; }
             
+            if (_disposed) return;
             Start(_language, errorHandler);
-        });
+        }));
 
         _client.Start();
     }   
@@ -180,7 +205,7 @@ public class Bing : IRecognizer
     public void Stop()
     {
         _capture.Stop();
-        _client.Stop(WebSocketCloseStatus.NormalClosure, "User request");
+        _client?.Stop(WebSocketCloseStatus.NormalClosure, "User request");
         ChangeRecognizerStatus(RecognizerStatus.NotStarted);
          
         Log.Information("[BING] Bing recognizer has stopped");
@@ -190,6 +215,7 @@ public class Bing : IRecognizer
 
     private void OnAudioData(float[] samples, bool speech)
     {
+        if (_disposed) return;
         var byteArray = new byte[samples.Length * 2]; 
 
         for (int i = 0; i < samples.Length; i++)
@@ -208,8 +234,47 @@ public class Bing : IRecognizer
         _client.Send(CreateBinaryMessage("audio", $"{_streamIdCounter}", _currentRequestId, byteArray, null));
     }
 
-    private async void RestartTurn()
+    private async Task RestartTurn()
     {
+        try
+        {
+            await RestartTurnCore();
+        }
+        catch (OperationCanceledException) when (_disposed)
+        {
+        }
+        catch (Exception e)
+        {
+            Log.Error(e, "[BING] Unable to restart speech turn");
+        }
+    }
+
+    private void RunCallback(Func<Task> callback)
+    {
+        lock (_callbackTasks)
+        {
+            if (_disposed) return;
+            _callbackTasks.RemoveAll(task => task.IsCompleted);
+            _callbackTasks.Add(Task.Run(async () =>
+            {
+                try
+                {
+                    await callback();
+                }
+                catch (OperationCanceledException) when (_disposed)
+                {
+                }
+                catch (Exception e)
+                {
+                    Log.Error(e, "[BING] WebSocket callback failed");
+                }
+            }));
+        }
+    }
+
+    private async Task RestartTurnCore()
+    {
+        if (_disposed) return;
         if (!_client.IsRunning) return;
 
         _currentRequestId = GenerateUUID();
@@ -220,6 +285,7 @@ public class Bing : IRecognizer
             Log.Verbose("[BING] Stream ID counter limit has been reached. Restarting Bing recognizer...");
             
             Stop();
+            if (_disposed) return;
             Start(_language, null);
 
             return;
@@ -259,11 +325,14 @@ public class Bing : IRecognizer
         _client.Send(CreateTextMessage("speech.context", JsonConvert.SerializeObject(contextPayload), "application/json", _currentRequestId));
         Log.Verbose("[BING] Sent speech context");
         
-        await Task.Delay(50);
+        try { await Task.Delay(50, _lifetime.Token); }
+        catch (OperationCanceledException) { return; }
         _client.Send(CreateBinaryMessage("audio", $"{_streamIdCounter}", _currentRequestId, CreateWavHeader(), "audio/x-wav"));
         Log.Verbose("[BING] Sent wav header");
         
-        await Task.Delay(25);
+        try { await Task.Delay(25, _lifetime.Token); }
+        catch (OperationCanceledException) { return; }
+        if (_disposed) return;
         _capture.Resume();
     }
 
@@ -375,7 +444,17 @@ public class Bing : IRecognizer
 
     public void Dispose()
     {
+        Task[] callbacks;
+        lock (_callbackTasks)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            callbacks = _callbackTasks.ToArray();
+        }
+        _lifetime.Cancel();
+        _capture.OnDataReceived -= OnAudioData;
         Stop();
-        _client.Dispose();
+        _client?.Dispose();
+        Task.WhenAll(callbacks).GetAwaiter().GetResult();
     }
 }

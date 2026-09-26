@@ -53,12 +53,12 @@ public class Manager
     private Kikitan? _microphoneKikitan;
     private Kikitan? _desktopKikitan;
 
-    private ITranslator _translator;
     private Loopback _loopback;
     private Microphone _mic;
     private AppState _appState = new () { Microphones = [] };
     private IErrorHandler _errorHandler;
     private bool _running;
+    private readonly object _lifecycleLock = new();
 
     private OverlayWriter? _writer;
 
@@ -175,22 +175,23 @@ public class Manager
 
     public void Start()
     {
+        lock (_lifecycleLock)
+        {
+            if (_running)
+            {
+                RestartCore();
+                return;
+            }
+
+            StartCore();
+        }
+    }
+
+    private void StartCore()
+    {
         Log.Information($"[APP] Start requested: running={_running}, recognizer={AppConfig.ConfigObject.Recognizer}, translator={AppConfig.ConfigObject.Translator}, desktop={AppConfig.ConfigObject.DesktopTranslation}, chatbox={AppConfig.ConfigObject.SendToChatbox}");
 
-        if (_running)
-        {
-            RestartIfRunning();
-
-            return;
-        }
-
-        IRecognizer rMic;
-        if (AppConfig.ConfigObject.Recognizer == 0) rMic = new Bing(_mic);
-        else if (AppConfig.ConfigObject.Recognizer == 1) rMic = new GroqRecognizer(_mic);
-        else rMic = new Gemini(_mic);
-
-        if (AppConfig.ConfigObject.Translator == 0) _translator = new GoogleTranslate();
-        else if (AppConfig.ConfigObject.Translator == 1)
+        if (AppConfig.ConfigObject.Translator == 1)
         {
             if (string.IsNullOrEmpty(AppConfig.ConfigObject.GroqApiKey))
             {
@@ -200,11 +201,12 @@ public class Manager
                 return;
             }
         
-            var client = new HttpClient();
+            using var client = new HttpClient();
             client.DefaultRequestHeaders.Add("Authorization", $"Bearer {AppConfig.ConfigObject.GroqApiKey}");
-            var request = new HttpRequestMessage(HttpMethod.Post, "https://api.groq.com/openai/v1/audio/transcriptions");
+            using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.groq.com/openai/v1/audio/transcriptions");
 
-            if (client.Send(request).StatusCode == HttpStatusCode.Unauthorized)
+            using var response = client.Send(request);
+            if (response.StatusCode == HttpStatusCode.Unauthorized)
             {
                 Log.Error("[GROQ] Invalid Groq API key!");
                 _errorHandler.OnError("GROQ_INVALID_API_KEY");
@@ -212,11 +214,14 @@ public class Manager
                 return;
             }
             
-            _translator = new GroqTranslator();
         }
-        else _translator = new GeminiStub();
 
-        _microphoneKikitan = new Kikitan(rMic, _translator, new ErrorHandler(_connector), false);
+        IRecognizer rMic;
+        if (AppConfig.ConfigObject.Recognizer == 0) rMic = new Bing(_mic);
+        else if (AppConfig.ConfigObject.Recognizer == 1) rMic = new GroqRecognizer(_mic);
+        else rMic = new Gemini(_mic);
+
+        _microphoneKikitan = new Kikitan(rMic, CreateTranslator(), new ErrorHandler(_connector), false);
         _microphoneKikitan.AddOutput(new Custom(SendRecognitionData, false));
         if (AppConfig.ConfigObject.SendToChatbox)
         {
@@ -246,75 +251,125 @@ public class Manager
             SendUpdateToUI();
         };
         
-        _microphoneKikitan.Start();
-
-        if (AppConfig.ConfigObject.DesktopTranslation && !_appState.IsLinux)
+        try
         {
-            IRecognizer rDesktop;
-            
-            if (AppConfig.ConfigObject.Recognizer == 0) rDesktop = new Bing(_loopback);
-            else if (AppConfig.ConfigObject.Recognizer == 1) rDesktop = new GroqRecognizer(_loopback);
-            else rDesktop = new Gemini(_loopback);
-            
-            _desktopKikitan = new Kikitan(rDesktop, _translator, new ErrorHandler(_connector), true);
-            Log.Information($"[APP] Desktop pipeline starting: recognizer={rDesktop.GetType().Name}, overlayAvailable={_writer != null}");
-            if (_writer != null)
+            _microphoneKikitan.Start();
+            if (rMic.Status() == RecognizerStatus.NotStarted)
             {
-                _desktopKikitan.AddOutput(new Custom((recognized, translated, final) =>
-                {
-                    var text = AppConfig.ConfigObject.SpeechToTextOnly ? recognized : translated;
-                    var time = text.Length * AppConfig.ConfigObject.ChatboxWaitPerCharMs;
+                _microphoneKikitan.Dispose();
+                _microphoneKikitan = null;
+            }
 
-                    if (text.Trim().Length == 0) return;
-                    Log.Debug($"[LOOP] Writing overlay output: chars={text.Length}, final={final}, durationMs={Math.Max(5000, time)}");
-            
-                    _writer.Write(new OverlayPipeData { Text = text, NoLanguageSpace =
-                        (AppConfig.ConfigObject.SourceLanguage == "ja" || AppConfig.ConfigObject.SourceLanguage == "ko" ||
-                         AppConfig.ConfigObject.SourceLanguage == "cn"), Time = time < 5000 ? 5000 : time});
-                }, false));
-            }
-            
-            if (AppConfig.ConfigObject.SendUserData)
+            if (AppConfig.ConfigObject.DesktopTranslation && !_appState.IsLinux)
             {
-                _desktopKikitan.AddOutput(new OSC("/desktop"));
+                try
+                {
+                    StartDesktopCore();
+                }
+                catch (Exception e)
+                {
+                    Log.Error(e, "[APP] Desktop pipeline failed to start");
+                    _desktopKikitan?.Dispose();
+                    _desktopKikitan = null;
+                    _errorHandler.OnError($"Desktop pipeline failed to start: {e.Message}");
+                }
             }
-            
-            _desktopKikitan?.Start();
+
+            _running = _microphoneKikitan != null || _desktopKikitan != null;
+            Log.Information($"[APP] Startup complete.");
+            SendUpdateToUI();
         }
-        
-        _running = true;
-        Log.Information($"[APP] Startup complete.");
-        SendUpdateToUI();
+        catch
+        {
+            StopCore();
+            throw;
+        }
+    }
+
+    private void StartDesktopCore()
+    {
+        IRecognizer rDesktop;
+        if (AppConfig.ConfigObject.Recognizer == 0) rDesktop = new Bing(_loopback);
+        else if (AppConfig.ConfigObject.Recognizer == 1) rDesktop = new GroqRecognizer(_loopback);
+        else rDesktop = new Gemini(_loopback);
+
+        _desktopKikitan = new Kikitan(rDesktop, CreateTranslator(), new ErrorHandler(_connector), true);
+        Log.Information($"[APP] Desktop pipeline starting: recognizer={rDesktop.GetType().Name}, overlayAvailable={_writer != null}");
+        if (_writer != null)
+        {
+            _desktopKikitan.AddOutput(new Custom((recognized, translated, final) =>
+            {
+                var text = AppConfig.ConfigObject.SpeechToTextOnly ? recognized : translated;
+                var time = text.Length * AppConfig.ConfigObject.ChatboxWaitPerCharMs;
+
+                if (text.Trim().Length == 0) return;
+                Log.Debug($"[LOOP] Writing overlay output: chars={text.Length}, final={final}, durationMs={Math.Max(5000, time)}");
+
+                _writer.Write(new OverlayPipeData { Text = text, NoLanguageSpace =
+                    (AppConfig.ConfigObject.SourceLanguage == "ja" || AppConfig.ConfigObject.SourceLanguage == "ko" ||
+                     AppConfig.ConfigObject.SourceLanguage == "cn"), Time = time < 5000 ? 5000 : time});
+            }, false));
+        }
+
+        if (AppConfig.ConfigObject.SendUserData)
+        {
+            _desktopKikitan.AddOutput(new OSC("/desktop"));
+        }
+
+        _desktopKikitan.Start();
+        if (rDesktop.Status() == RecognizerStatus.NotStarted)
+        {
+            _desktopKikitan.Dispose();
+            _desktopKikitan = null;
+        }
     }
 
     public void Stop()
     {
-        Log.Information($"[APP] Stopping...");
-        _microphoneKikitan?.Dispose();
-        _desktopKikitan?.Dispose();
-
-        _running = false;
-        
-        SendUpdateToUI();
+        lock (_lifecycleLock) StopCore();
     }
 
-    public async void RestartIfRunning()
+    public void RestartIfRunning()
     {
-        Log.Information($"[APP] Restart requested: running={_running}");
-        // Double checking _running is not really sensible but idc honestly, this works
-        if (_running)
+        lock (_lifecycleLock)
         {
-            _appState.Status = 1;
-            Stop();
-
-            await Task.Delay(100);
-            
-            Log.Information($"[APP] Restart delay completed: running={_running}, willRestart={_running}");
-            if (!_running) Start();
+            if (_running) RestartCore();
         }
-        
+    }
+
+    private void RestartCore()
+    {
+        Log.Information("[APP] Restart requested");
+        _appState.Status = 1;
+        StopCore();
+        StartCore();
+    }
+
+    private void StopCore()
+    {
+        Log.Information("[APP] Stopping...");
+        _running = false;
+        var desktop = _desktopKikitan;
+        var microphone = _microphoneKikitan;
+        _desktopKikitan = null;
+        _microphoneKikitan = null;
+        try
+        {
+            microphone?.Dispose();
+        }
+        finally
+        {
+            desktop?.Dispose();
+        }
         SendUpdateToUI();
     }
+
+    private static ITranslator CreateTranslator() => AppConfig.ConfigObject.Translator switch
+    {
+        0 => new GoogleTranslate(),
+        1 => new GroqTranslator(),
+        _ => new GeminiStub()
+    };
 
     public void ManualTranslate(string text) => _microphoneKikitan?.ManualTranslate(text);
 

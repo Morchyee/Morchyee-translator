@@ -98,6 +98,7 @@ public class Loopback : ICapture
             Log.Information("[LOOP] Stop requested; signalling capture cancellation");
             session.Cancellation.Cancel();
         }
+        if (session.Thread != Thread.CurrentThread) session.Thread.Join();
     }
 
     public void Pause() => SetPaused(true);

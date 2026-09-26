@@ -16,6 +16,11 @@ namespace KikitanTranslator.Base.Recognizers;
 public class Gemini(ICapture capture) : IRecognizer
 {
     private WebsocketClient? _client;
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly List<Task> _callbackTasks = [];
+    private bool _audioSubscribed;
+    private volatile bool _disposed;
+    private bool _stopping;
 
     private RecognizerStatus _status;
 
@@ -26,6 +31,7 @@ public class Gemini(ICapture capture) : IRecognizer
     
     public void Start(string language, IErrorHandler errorHandler)
     {
+        if (_disposed) return;
         Resources.ErrorMessages.messages.Culture = new CultureInfo(AppConfig.ConfigObject.Language == "jp" ? "ja" : AppConfig.ConfigObject.Language);
         
         Log.Information($"[GEMI] Starting live translator: capture={capture.GetType().Name}, language={language}, status={_status}");
@@ -51,13 +57,16 @@ public class Gemini(ICapture capture) : IRecognizer
         var url = $"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key={AppConfig.ConfigObject.GeminiApiKey}";
         _client = new WebsocketClient(new Uri(url));
         
-        _client.ReconnectionHappened.Subscribe(async info =>
+        _client.ReconnectionHappened.Subscribe(info => RunCallback(async () =>
         {
+            if (_disposed) return;
             Log.Information($"[GEMI] Connection event: type={info.Type}, status={_status}, capture={capture.GetType().Name}");
             if (_status == RecognizerStatus.Connecting || _status == RecognizerStatus.Running) return;
             
             Log.Verbose("[GEMI] Websocket connection established");
-            await Task.Delay(100);
+            try { await Task.Delay(100, _lifetime.Token); }
+            catch (OperationCanceledException) { return; }
+            if (_disposed) return;
             
             var configPayload = new
             {
@@ -82,24 +91,36 @@ public class Gemini(ICapture capture) : IRecognizer
             
             ChangeRecognizerStatus(RecognizerStatus.Connecting);
             Log.Information("[GEMI] Payload has been sent!");
-        });
+        }));
         
         _client.MessageReceived.Subscribe(message =>
         {
+            if (_disposed) return;
             var msg = Encoding.UTF8.GetString(message.Binary).Trim();
             dynamic data = JObject.Parse(msg);
 
             if (_status != RecognizerStatus.Running)
             {
-                capture.OnDataReceived += OnAudioData;
-                
-                if (!capture.Start())
+                bool started;
+                lock (_callbackTasks)
+                {
+                    if (_disposed || _stopping) return;
+                    if (!_audioSubscribed)
+                    {
+                        capture.OnDataReceived += OnAudioData;
+                        _audioSubscribed = true;
+                    }
+                    started = capture.Start();
+                }
+
+                if (!started)
                 {
                     Log.Error("[GEMI] Unable to start capture!");
                     Stop();
 
                     return;
                 }
+                if (_disposed) return;
             
                 ChangeRecognizerStatus(RecognizerStatus.Running);
                 Log.Information("[GEMI] Gemini recognizer has started");
@@ -145,8 +166,9 @@ public class Gemini(ICapture capture) : IRecognizer
             }
         });
         
-        _client.DisconnectionHappened.Subscribe(async info =>
+        _client.DisconnectionHappened.Subscribe(info =>
         {
+            if (_disposed) return;
             Log.Error($"[GEMI] Websocket connection has closed. Reason: {info.Type}");
             ChangeRecognizerStatus(RecognizerStatus.NotStarted);
         });
@@ -156,9 +178,17 @@ public class Gemini(ICapture capture) : IRecognizer
 
     public void Stop()
     {
+        lock (_callbackTasks)
+        {
+            _stopping = true;
+            if (_audioSubscribed)
+            {
+                capture.OnDataReceived -= OnAudioData;
+                _audioSubscribed = false;
+            }
+        }
         capture.Stop();
         _client?.Stop(WebSocketCloseStatus.NormalClosure, "User request");
-        capture.OnDataReceived -= OnAudioData;
         ChangeRecognizerStatus(RecognizerStatus.NotStarted);
          
         Log.Information("[GEMI] Gemini translator has stopped");
@@ -175,6 +205,7 @@ public class Gemini(ICapture capture) : IRecognizer
     
     private void OnAudioData(float[] samples, bool speech)
     {
+        if (_disposed) return;
         var payload = new
         {
             realtimeInput = new
@@ -188,6 +219,29 @@ public class Gemini(ICapture capture) : IRecognizer
         };
 
         _client?.Send(JsonConvert.SerializeObject(payload));
+    }
+
+    private void RunCallback(Func<Task> callback)
+    {
+        lock (_callbackTasks)
+        {
+            if (_disposed) return;
+            _callbackTasks.RemoveAll(task => task.IsCompleted);
+            _callbackTasks.Add(Task.Run(async () =>
+            {
+                try
+                {
+                    await callback();
+                }
+                catch (OperationCanceledException) when (_disposed)
+                {
+                }
+                catch (Exception e)
+                {
+                    Log.Error(e, "[GEMI] WebSocket callback failed");
+                }
+            }));
+        }
     }
     
     
@@ -228,8 +282,17 @@ public class Gemini(ICapture capture) : IRecognizer
     
     public void Dispose()
     {
+        Task[] callbacks;
+        lock (_callbackTasks)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            callbacks = _callbackTasks.ToArray();
+        }
+        _lifetime.Cancel();
         Stop();
         _client?.Dispose();
+        Task.WhenAll(callbacks).GetAwaiter().GetResult();
     }
     
     public event OnRecognition? OnRecognitionReceived;

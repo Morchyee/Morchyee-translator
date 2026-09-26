@@ -25,6 +25,10 @@ public class GroqRecognizer : IRecognizer
 
     private readonly Queue<(float[] samples, bool speech)> _frameQueue = new();
     private readonly SemaphoreSlim _processingSemaphore = new(1, 1);
+    private readonly CancellationTokenSource _cancellation = new();
+    private readonly List<Task> _transcriptions = [];
+    private volatile bool _stopping;
+    private bool _disposed;
 
     private string _language;
 
@@ -36,6 +40,7 @@ public class GroqRecognizer : IRecognizer
 
     public void Start(string language, IErrorHandler errorHandler)
     {
+        if (_disposed) return;
         Log.Information($"[GROQ] Start requested: capture={_capture.GetType().Name}, language={language}, status={_status}");
         if (string.IsNullOrEmpty(AppConfig.ConfigObject.GroqApiKey))
         {
@@ -45,11 +50,12 @@ public class GroqRecognizer : IRecognizer
             return;
         }
         
-        var client = new HttpClient();
+        using var client = new HttpClient();
         client.DefaultRequestHeaders.Add("Authorization", $"Bearer {AppConfig.ConfigObject.GroqApiKey}");
-        var request = new HttpRequestMessage(HttpMethod.Post, "https://api.groq.com/openai/v1/audio/transcriptions");
+        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.groq.com/openai/v1/audio/transcriptions");
 
-        if (client.Send(request).StatusCode == HttpStatusCode.Unauthorized)
+        using var response = client.Send(request);
+        if (response.StatusCode == HttpStatusCode.Unauthorized)
         {
             Log.Error("[GROQ] Invalid Groq API key!");
             errorHandler.OnError("GROQ_INVALID_API_KEY");
@@ -78,17 +84,23 @@ public class GroqRecognizer : IRecognizer
 
     public void Stop()
     {
-        if (_status == RecognizerStatus.NotStarted) return;
-
+        _stopping = true;
         _capture.Stop();
-
-        if (_isCollectingSpeech && _speechBuffer.Count > 0)
+        _processingSemaphore.Wait();
+        try
         {
-            TranscribeAsync(_speechBuffer.ToArray(), _capture.GetSampleRate());
             _speechBuffer.Clear();
             _isCollectingSpeech = false;
+            lock (_frameQueue) _frameQueue.Clear();
         }
-
+        finally
+        {
+            _processingSemaphore.Release();
+        }
+        _cancellation.Cancel();
+        Task[] pending;
+        lock (_transcriptions) pending = _transcriptions.ToArray();
+        Task.WhenAll(pending).GetAwaiter().GetResult();
         SetStatus(RecognizerStatus.NotStarted);
         Log.Information("[GROQ] Stopped Groq recognizer");
     }
@@ -97,17 +109,18 @@ public class GroqRecognizer : IRecognizer
 
     private void OnDataReceived(float[] samples, bool speech)
     {
+        if (_stopping) return;
         lock (_frameQueue) _frameQueue.Enqueue((samples, speech));
-        _ = DrainQueueAsync();
+        DrainQueue();
     }
 
-    private async Task DrainQueueAsync()
+    private void DrainQueue()
     {
-        if (!await _processingSemaphore.WaitAsync(0)) return;
+        if (!_processingSemaphore.Wait(0)) return;
 
         try
         {
-            while (true)
+            while (!_stopping)
             {
                 (float[] samples, bool speech) frame;
                 lock (_frameQueue)
@@ -150,11 +163,21 @@ public class GroqRecognizer : IRecognizer
                 Log.Debug($"[GROQ] Speech discarded: samples={audio.Length}, minimumSamples=3840, capture={_capture.GetType().Name}");
                 return;
             }
-            TranscribeAsync(audio, _capture.GetSampleRate());
+            StartTranscription(audio);
         }
     }
 
-    private async Task TranscribeAsync(float[] samples, uint sampleRate)
+    private void StartTranscription(float[] samples)
+    {
+        lock (_transcriptions)
+        {
+            if (_stopping) return;
+            _transcriptions.RemoveAll(task => task.IsCompleted);
+            _transcriptions.Add(TranscribeAsync(samples, _capture.GetSampleRate(), _cancellation.Token));
+        }
+    }
+
+    private async Task TranscribeAsync(float[] samples, uint sampleRate, CancellationToken cancellationToken)
     {
         var requestId = Guid.NewGuid().ToString("N");
         var requestTimer = System.Diagnostics.Stopwatch.StartNew();
@@ -184,22 +207,25 @@ public class GroqRecognizer : IRecognizer
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
             request.Content = content;
 
-            var response = await _httpClient.SendAsync(request);
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
             Log.Debug($"[GROQ] Transcription response: request={requestId}, status={(int)response.StatusCode}, elapsedMs={requestTimer.ElapsedMilliseconds}");
 
             if (!response.IsSuccessStatusCode)
             {
-                Log.Error($"[GROQ] Whisper API error {(int)response.StatusCode}: {await response.Content.ReadAsStringAsync()}");
+                Log.Error($"[GROQ] Whisper API error {(int)response.StatusCode}: {await response.Content.ReadAsStringAsync(cancellationToken)}");
                 
                 return;
             }
 
-            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
             var transcript = doc.RootElement.TryGetProperty("text", out var textProp) ? textProp.GetString()?.Trim() : null;
 
             Log.Debug($"[GROQ] Transcription parsed: request={requestId}, chars={transcript?.Length}, elapsedMs={requestTimer.ElapsedMilliseconds}");
             if (string.IsNullOrWhiteSpace(transcript)) return;
-            OnRecognitionReceived?.Invoke(transcript, true);
+            if (!cancellationToken.IsCancellationRequested) OnRecognitionReceived?.Invoke(transcript, true);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
         }
         catch (Exception ex)
         {
@@ -246,10 +272,13 @@ public class GroqRecognizer : IRecognizer
 
     public void Dispose()
     {
+        if (_disposed) return;
+        _disposed = true;
         Stop();
         _capture.OnDataReceived -= OnDataReceived;
         _httpClient.Dispose();
         _processingSemaphore.Dispose();
+        _cancellation.Dispose();
         GC.SuppressFinalize(this);
     }
 }
