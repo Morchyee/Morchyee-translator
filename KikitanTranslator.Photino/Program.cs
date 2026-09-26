@@ -69,6 +69,39 @@ public class Program
             tcs.Task.GetAwaiter().GetResult();
         }
 
+        if (!noUI && OperatingSystem.IsWindows() && AppConfig.ConfigObject.DesktopTranslation)
+        {
+            var exit = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            Thread? settingsThread = null;
+            using var trayControl = new DesktopControlServer(command =>
+            {
+                switch (command)
+                {
+                    case "start": manager.Start(); break;
+                    case "stop": manager.Stop(); break;
+                    case "settings":
+                        if (settingsThread is not { IsAlive: true })
+                        {
+                            settingsThread = new Thread(() => ShowSettingsWindow(appUrl, connector, messageHandler));
+                            settingsThread.IsBackground = true;
+                            settingsThread.SetApartmentState(ApartmentState.STA);
+                            settingsThread.Start();
+                        }
+                        break;
+                    case "exit": exit.TrySetResult(); break;
+                }
+            });
+            manager.Start();
+            exit.Task.GetAwaiter().GetResult();
+            manager.Stop();
+            return;
+        }
+
+        ShowSettingsWindow(appUrl, connector, messageHandler);
+    }
+
+    private static void ShowSettingsWindow(string appUrl, Connector connector, MessageHandler messageHandler)
+    {
         string windowTitle = "Kikitan Translator";
 
         var iconFile = OperatingSystem.IsWindows() ? "kikitan_logo.ico" : "icon.png";
@@ -112,6 +145,7 @@ public class Program
         };
 
         window.WaitForClose();
+        connector.WindowHandle = null;
     }
 
     static void UpdateResolution(PhotinoWindow window)

@@ -277,6 +277,55 @@ public class ConfigObject : INotifyPropertyChanged
             }
         }
     }
+
+    // Desktop providers are independent from the legacy microphone translator setting.
+    [JsonProperty("desktop_translation_provider")] private string _desktopTranslationProvider = "groq";
+
+    [JsonIgnore]
+    public string DesktopTranslationProvider
+    {
+        get => _desktopTranslationProvider;
+        set
+        {
+            if (_desktopTranslationProvider != value)
+            {
+                _desktopTranslationProvider = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    [JsonProperty("google_cloud_api_key")] private string _googleCloudApiKey = "";
+
+    [JsonIgnore]
+    public string GoogleCloudApiKey
+    {
+        get => _googleCloudApiKey;
+        set
+        {
+            if (_googleCloudApiKey != value)
+            {
+                _googleCloudApiKey = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    [JsonProperty("deepl_api_key")] private string _deepLApiKey = "";
+
+    [JsonIgnore]
+    public string DeepLApiKey
+    {
+        get => _deepLApiKey;
+        set
+        {
+            if (_deepLApiKey != value)
+            {
+                _deepLApiKey = value;
+                OnPropertyChanged();
+            }
+        }
+    }
     
     [JsonProperty("send_without_waiting_for_finish")] private bool _sendWithoutWaitingForFinish = false;
 

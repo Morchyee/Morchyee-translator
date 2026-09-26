@@ -53,14 +53,17 @@ public class Manager
     private Kikitan? _microphoneKikitan;
     private Kikitan? _desktopKikitan;
 
-    private Loopback _loopback;
+    private SystemLoopback _loopback;
     private Microphone _mic;
     private AppState _appState = new () { Microphones = [] };
     private IErrorHandler _errorHandler;
     private bool _running;
     private readonly object _lifecycleLock = new();
 
-    private OverlayWriter? _writer;
+    private readonly SubtitleWriter _subtitleWriter = new();
+    private Process? _subtitleProcess;
+    private readonly bool _noUI;
+    private OscWatcher? _oscWatcher;
 
     private Connector _connector;
 
@@ -68,6 +71,7 @@ public class Manager
 
     public Manager(bool noUI, Connector connector)
     {
+        _noUI = noUI;
         _appState.Config = AppConfig.ConfigObject;
 
         _errorHandler = new ErrorHandler(connector);
@@ -102,41 +106,21 @@ public class Manager
             SendUpdateToUI();
         };
 
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && !noUI)
-        {
-            _writer = new();
-            
-            if (!Path.Exists("KikitanTranslator.Overlay.exe"))
-            {
-                Log.Warning("Kikitan Overlay doesn't exist! Perhaps a debug build?");
-            }
-            else
-            {
-                Process proc = new Process();
-                proc.StartInfo.FileName = "KikitanTranslator.Overlay.exe";
-                proc.StartInfo.CreateNoWindow = true;
-                proc.StartInfo.UseShellExecute = false;
-                proc.Start();
-            }
-        }
-
-        var oscWatcher = new OscWatcher();
-        oscWatcher.MuteStatusChanged += muted =>
-        {
-            _appState.IsMuted = muted;
-            
-            SendUpdateToUI();
-        };
-        oscWatcher.Start();;
-        
         Task.Run(async () =>
         {
-            var engine = new MiniAudioEngine(backendPriority: [MiniAudioBackend.Wasapi, MiniAudioBackend.Oss]);
+            MiniAudioEngine? engine = null;
 
             List<Mic> mics = new();
 
             while (true)
             {
+                if (AppConfig.ConfigObject.DesktopTranslation && !_appState.IsLinux)
+                {
+                    await Task.Delay(500);
+                    continue;
+                }
+
+                engine ??= new MiniAudioEngine(backendPriority: [MiniAudioBackend.Wasapi, MiniAudioBackend.Oss]);
                 engine.UpdateAudioDevicesInfo();
                 foreach (var mic in engine.CaptureDevices)
                 {
@@ -190,8 +174,9 @@ public class Manager
     private void StartCore()
     {
         Log.Information($"[APP] Start requested: running={_running}, recognizer={AppConfig.ConfigObject.Recognizer}, translator={AppConfig.ConfigObject.Translator}, desktop={AppConfig.ConfigObject.DesktopTranslation}, chatbox={AppConfig.ConfigObject.SendToChatbox}");
+        var desktopMode = AppConfig.ConfigObject.DesktopTranslation && !_appState.IsLinux;
 
-        if (AppConfig.ConfigObject.Translator == 1)
+        if (AppConfig.ConfigObject.Translator == 1 && !desktopMode)
         {
             if (string.IsNullOrEmpty(AppConfig.ConfigObject.GroqApiKey))
             {
@@ -215,6 +200,34 @@ public class Manager
             }
             
         }
+
+        if (desktopMode)
+        {
+            try
+            {
+                StartDesktopCore();
+            }
+            catch (Exception e)
+            {
+                Log.Error(e, "[APP] Desktop pipeline failed to start");
+                _desktopKikitan?.Dispose();
+                _desktopKikitan = null;
+                _errorHandler.OnError($"Desktop pipeline failed to start: {e.Message}");
+            }
+
+            _running = _desktopKikitan != null;
+            Log.Information("[APP] Startup complete.");
+            SendUpdateToUI();
+            return;
+        }
+
+        _oscWatcher = new OscWatcher();
+        _oscWatcher.MuteStatusChanged += muted =>
+        {
+            _appState.IsMuted = muted;
+            SendUpdateToUI();
+        };
+        _oscWatcher.Start();
 
         IRecognizer rMic;
         if (AppConfig.ConfigObject.Recognizer == 0) rMic = new Bing(_mic);
@@ -260,22 +273,12 @@ public class Manager
                 _microphoneKikitan = null;
             }
 
-            if (AppConfig.ConfigObject.DesktopTranslation && !_appState.IsLinux)
+            _running = _microphoneKikitan != null;
+            if (!_running)
             {
-                try
-                {
-                    StartDesktopCore();
-                }
-                catch (Exception e)
-                {
-                    Log.Error(e, "[APP] Desktop pipeline failed to start");
-                    _desktopKikitan?.Dispose();
-                    _desktopKikitan = null;
-                    _errorHandler.OnError($"Desktop pipeline failed to start: {e.Message}");
-                }
+                _oscWatcher.Dispose();
+                _oscWatcher = null;
             }
-
-            _running = _microphoneKikitan != null || _desktopKikitan != null;
             Log.Information($"[APP] Startup complete.");
             SendUpdateToUI();
         }
@@ -288,32 +291,38 @@ public class Manager
 
     private void StartDesktopCore()
     {
+        var provider = AppConfig.ConfigObject.DesktopTranslationProvider;
+        var key = provider switch
+        {
+            "google" => AppConfig.ConfigObject.GoogleCloudApiKey,
+            "deepl" => AppConfig.ConfigObject.DeepLApiKey,
+            "groq" => AppConfig.ConfigObject.GroqApiKey,
+            _ => throw new InvalidOperationException($"Unknown desktop translation provider: {provider}")
+        };
+        if (!AppConfig.ConfigObject.SpeechToTextOnly && string.IsNullOrWhiteSpace(key))
+            Log.Warning("[SUBTITLE] {Provider} API key is not configured; recognized text will still be shown", provider);
+
+        if (!_noUI) StartSubtitleWindow();
+
         IRecognizer rDesktop;
         if (AppConfig.ConfigObject.Recognizer == 0) rDesktop = new Bing(_loopback);
         else if (AppConfig.ConfigObject.Recognizer == 1) rDesktop = new GroqRecognizer(_loopback);
         else rDesktop = new Gemini(_loopback);
 
-        _desktopKikitan = new Kikitan(rDesktop, CreateTranslator(), new ErrorHandler(_connector), true);
-        Log.Information($"[APP] Desktop pipeline starting: recognizer={rDesktop.GetType().Name}, overlayAvailable={_writer != null}");
-        if (_writer != null)
+        _desktopKikitan = new Kikitan(rDesktop, CreateDesktopTranslator(provider), new ErrorHandler(_connector), true);
+        Log.Information($"[APP] Desktop pipeline starting: recognizer={rDesktop.GetType().Name}, subtitleWindow={_subtitleProcess != null}");
+        _desktopKikitan.OnRecognizerStatusChanged += s =>
+        {
+            _appState.Status = (int)s;
+            SendUpdateToUI();
+        };
+        if (!_noUI)
         {
             _desktopKikitan.AddOutput(new Custom((recognized, translated, final) =>
             {
-                var text = AppConfig.ConfigObject.SpeechToTextOnly ? recognized : translated;
-                var time = text.Length * AppConfig.ConfigObject.ChatboxWaitPerCharMs;
-
-                if (text.Trim().Length == 0) return;
-                Log.Debug($"[LOOP] Writing overlay output: chars={text.Length}, final={final}, durationMs={Math.Max(5000, time)}");
-
-                _writer.Write(new OverlayPipeData { Text = text, NoLanguageSpace =
-                    (AppConfig.ConfigObject.SourceLanguage == "ja" || AppConfig.ConfigObject.SourceLanguage == "ko" ||
-                     AppConfig.ConfigObject.SourceLanguage == "cn"), Time = time < 5000 ? 5000 : time});
+                if (string.IsNullOrWhiteSpace(recognized)) return;
+                _subtitleWriter.Write(new DesktopSubtitleResult(recognized, translated, final));
             }, false));
-        }
-
-        if (AppConfig.ConfigObject.SendUserData)
-        {
-            _desktopKikitan.AddOutput(new OSC("/desktop"));
         }
 
         _desktopKikitan.Start();
@@ -322,6 +331,22 @@ public class Manager
             _desktopKikitan.Dispose();
             _desktopKikitan = null;
         }
+    }
+
+    private void StartSubtitleWindow()
+    {
+        if (_subtitleProcess is { HasExited: false }) return;
+
+        var path = Path.Combine(AppContext.BaseDirectory, "KikitanTranslator.Subtitles.exe");
+        if (!File.Exists(path))
+        {
+            Log.Warning("[SUBTITLE] Subtitle window executable not found: {Path}", path);
+            return;
+        }
+
+        var startInfo = new ProcessStartInfo(path) { UseShellExecute = false };
+        startInfo.ArgumentList.Add(Environment.ProcessId.ToString());
+        _subtitleProcess = Process.Start(startInfo);
     }
 
     public void Stop()
@@ -360,6 +385,8 @@ public class Manager
         finally
         {
             desktop?.Dispose();
+            _oscWatcher?.Dispose();
+            _oscWatcher = null;
         }
         SendUpdateToUI();
     }
@@ -369,6 +396,14 @@ public class Manager
         0 => new GoogleTranslate(),
         1 => new GroqTranslator(),
         _ => new GeminiStub()
+    };
+
+    private static ITranslator CreateDesktopTranslator(string provider) => provider switch
+    {
+        "google" => new GoogleCloudTranslator(),
+        "deepl" => new DeepLTranslator(),
+        "groq" => new GroqTranslator(),
+        _ => throw new InvalidOperationException($"Unknown desktop translation provider: {provider}")
     };
 
     public void ManualTranslate(string text) => _microphoneKikitan?.ManualTranslate(text);

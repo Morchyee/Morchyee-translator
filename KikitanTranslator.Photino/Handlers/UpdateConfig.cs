@@ -94,6 +94,17 @@ public class UpdateConfig(Manager manager) : IHandler
                 AppConfig.ConfigObject.DesktopTranslation = (bool) d.Value;
                 
                 break;
+            case "desktop_translation_provider":
+                var provider = (string)d.Value;
+                if (provider is "google" or "deepl" or "groq")
+                    AppConfig.ConfigObject.DesktopTranslationProvider = provider;
+                break;
+            case "google_cloud_api_key":
+                AppConfig.ConfigObject.GoogleCloudApiKey = (string)d.Value;
+                break;
+            case "deepl_api_key":
+                AppConfig.ConfigObject.DeepLApiKey = (string)d.Value;
+                break;
             case "quickstart_viewed":
                 AppConfig.ConfigObject.QuickstartViewed = (bool) d.Value;
                 doNotRestart = true;

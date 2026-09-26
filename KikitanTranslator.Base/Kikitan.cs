@@ -45,7 +45,7 @@ public class Kikitan : IDisposable
     {
         if (_disposed) throw new ObjectDisposedException(nameof(Kikitan));
         _running = true;
-        _recognizer.Start(_isLoopback ? AppConfig.ConfigObject.TargetLanguage : AppConfig.ConfigObject.SourceLanguage, _errorHandler);
+        _recognizer.Start(AppConfig.ConfigObject.SourceLanguage, _errorHandler);
         Log.Information($"[KKTN] Recognizer start result: desktop={_isLoopback}, status={_recognizer.Status()}");
         
         _workerTask = QueueWorkerAsync(_workerCancellation.Token);
@@ -93,31 +93,53 @@ public class Kikitan : IDisposable
 
         if (!final || text.Length == 0) return;
 
+        string? translated;
+        var translationTimer = System.Diagnostics.Stopwatch.StartNew();
+        Log.Debug($"[KKTN] Translation started: desktop={_isLoopback}, translator={_translator.GetType().Name}, chars={text.Length}, transcriptionOnly={AppConfig.ConfigObject.SpeechToTextOnly}");
         try
         {
-            var translationTimer = System.Diagnostics.Stopwatch.StartNew();
-            Log.Debug($"[KKTN] Translation started: desktop={_isLoopback}, translator={_translator.GetType().Name}, chars={text.Length}, transcriptionOnly={AppConfig.ConfigObject.SpeechToTextOnly}");
-            var translated = AppConfig.ConfigObject.SpeechToTextOnly ? "" : _isLoopback ? _translator.Translate(text, AppConfig.ConfigObject.TargetLanguage, AppConfig.ConfigObject.SourceLanguage) : _translator.Translate(text, AppConfig.ConfigObject.SourceLanguage, AppConfig.ConfigObject.TargetLanguage);
-        
-            Log.Debug($"[KKTN] Translation completed: desktop={_isLoopback}, elapsedMs={translationTimer.ElapsedMilliseconds}, resultChars={translated?.Length}, hasResult={translated != null}");
-            if (!_running) return;
-            if (translated == null) Log.Warning($"[KKTN] No translation result; final output skipped: desktop={_isLoopback}");
-            if (translated != null)
-            {
-                lock (_queueLock)
-                {
-                    _queue.Add([text, translated]);
-                    Log.Debug($"[KKTN] Translation queued: desktop={_isLoopback}, depth={_queue.Count}");
-                }
-            
-                foreach (var output in _outputs.Where(v => !v.IsDelayed())) output.Send(text, translated, true);
-            }
+            translated = AppConfig.ConfigObject.SpeechToTextOnly ? "" :
+                _translator.Translate(text, AppConfig.ConfigObject.SourceLanguage, AppConfig.ConfigObject.TargetLanguage);
         }
         catch (Exception e)
         {
-            Log.Error(e, $"[KKTN] Translation/output processing failed: desktop={_isLoopback}");
-            
-            _errorHandler.OnError($"Error while translating: {e.Message}");
+            Log.Error(e, $"[KKTN] Translation failed: desktop={_isLoopback}");
+            if (!_isLoopback)
+            {
+                _errorHandler.OnError($"Error while translating: {e.Message}");
+                return;
+            }
+            translated = null;
+        }
+
+        Log.Debug($"[KKTN] Translation completed: desktop={_isLoopback}, elapsedMs={translationTimer.ElapsedMilliseconds}, resultChars={translated?.Length}, hasResult={translated != null}");
+        if (!_running) return;
+        if (_isLoopback && (AppConfig.ConfigObject.SpeechToTextOnly || string.IsNullOrWhiteSpace(translated)))
+        {
+            if (!AppConfig.ConfigObject.SpeechToTextOnly)
+                Log.Warning("[KKTN] Desktop translation unavailable; sending recognized text");
+            translated = "";
+        }
+        if (translated == null)
+        {
+            Log.Warning("[KKTN] No translation result; final output skipped: desktop={Desktop}", _isLoopback);
+            return;
+        }
+
+        try
+        {
+            lock (_queueLock)
+            {
+                _queue.Add([text, translated]);
+                Log.Debug($"[KKTN] Translation queued: desktop={_isLoopback}, depth={_queue.Count}");
+            }
+
+            foreach (var output in _outputs.Where(v => !v.IsDelayed())) output.Send(text, translated, true);
+        }
+        catch (Exception e)
+        {
+            Log.Error(e, $"[KKTN] Output processing failed: desktop={_isLoopback}");
+            _errorHandler.OnError($"Error while sending output: {e.Message}");
         }
     }
 

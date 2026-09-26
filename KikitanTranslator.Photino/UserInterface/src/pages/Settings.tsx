@@ -149,7 +149,15 @@ export default function SettingsPage({ closeCallback, state }: SettingsProps) {
                     <FormGroup>
                         <div className="grid grid-rows-1 grid-cols-2 gap-24">
                             <div id="settings">
-                                <p className={`mt-2 ${state.config.light_mode ? "text-black" : "text-slate-400"}`}>{localization.translation_service[state.config.language]}</p>
+                                <p className={`mt-2 ${state.config.light_mode ? "text-black" : "text-slate-400"}`}>{state.config.desktop_translation ? "Translation Provider" : localization.translation_service[state.config.language]}</p>
+                                {state.config.desktop_translation ? <Select className="w-96"
+                                    sx={{color: state.config.light_mode ? 'black' : 'white'}}
+                                    value={state.config.desktop_translation_provider || "groq"}
+                                    onChange={(e) => setConfig("desktop_translation_provider", e.target.value)}>
+                                    <MenuItem value="google">Google Cloud Translation</MenuItem>
+                                    <MenuItem value="deepl">DeepL</MenuItem>
+                                    <MenuItem value="groq">Groq</MenuItem>
+                                </Select> :
                                 <Select sx={{
                                     color: state.config.light_mode ? 'black' : 'white',
                                     '& .MuiOutlinedInput-notchedOutline': {
@@ -168,7 +176,7 @@ export default function SettingsPage({ closeCallback, state }: SettingsProps) {
                                     <MenuItem sx={{color: state.config.light_mode ? 'black' : 'white'}} value={0}>Google Translate ({localization.default[state.config.language]})</MenuItem>
                                     <MenuItem sx={{color: state.config.light_mode ? 'black' : 'white'}} value={1}>Groq ({localization.requires_free_api_key[state.config.language]})</MenuItem>
                                     <MenuItem sx={{color: state.config.light_mode ? 'black' : 'white'}} value={2}>Gemini ({localization.requires_free_api_key[state.config.language]})</MenuItem>
-                                </Select>
+                                </Select>}
 
                                 <p className={`mt-2 ${state.config.light_mode ? "text-black" : "text-slate-400"}`}>{localization.recognition_service[state.config.language]}</p>
                                 <Select sx={{
@@ -217,7 +225,7 @@ export default function SettingsPage({ closeCallback, state }: SettingsProps) {
                                             className="ml-2 mt-2 w-48"
                                             value={state.config.groq_api_key}
                                             id="outlined-basic"
-                                            disabled={(state.config.translator != 1) && (state.config.recognizer != 1)}
+                                            disabled={state.config.desktop_translation ? (state.config.desktop_translation_provider !== "groq" && state.config.recognizer !== 1) : (state.config.translator !== 1 && state.config.recognizer !== 1)}
                                             variant="outlined"
                                             type="password"
                                             color={state.config.groq_api_key.length == 0 ? "warning" : "primary"}
@@ -225,7 +233,7 @@ export default function SettingsPage({ closeCallback, state }: SettingsProps) {
                                         />
                                         <Button variant="contained"
                                                 color={state.config.groq_api_key.length == 0 ? "warning" : "primary"}
-                                                disabled={(state.config.translator != 1) && (state.config.recognizer != 1)} className="w-32 h-14"
+                                                disabled={state.config.desktop_translation ? (state.config.desktop_translation_provider !== "groq" && state.config.recognizer !== 1) : (state.config.translator !== 1 && state.config.recognizer !== 1)} className="w-32 h-14"
                                                 sx={{
                                                     "&.Mui-disabled": {
                                                         borderColor: state.config.light_mode ? 'rgba(0, 0, 0, 0.4)' : 'rgba(148, 163, 184, 0.5)',
@@ -238,6 +246,20 @@ export default function SettingsPage({ closeCallback, state }: SettingsProps) {
                                                 }}><p className="text-sm">{localization.get_api_key[state.config.language]}</p></Button>
                                     </div>
                                 </div>
+                                {state.config.desktop_translation && state.config.desktop_translation_provider === "google" &&
+                                    <div><p className="mt-2">Google Cloud {localization.api_key[state.config.language]}</p>
+                                        <TextField className="ml-2 mt-2 w-48" type="password"
+                                            value={state.config.google_cloud_api_key || ""}
+                                            onChange={(e) => setConfig("google_cloud_api_key", e.target.value)} />
+                                        <Button onClick={() => openURL("https://console.cloud.google.com/apis/credentials")}>{localization.get_api_key[state.config.language]}</Button>
+                                    </div>}
+                                {state.config.desktop_translation && state.config.desktop_translation_provider === "deepl" &&
+                                    <div><p className="mt-2">DeepL {localization.api_key[state.config.language]}</p>
+                                        <TextField className="ml-2 mt-2 w-48" type="password"
+                                            value={state.config.deepl_api_key || ""}
+                                            onChange={(e) => setConfig("deepl_api_key", e.target.value)} />
+                                        <Button onClick={() => openURL("https://www.deepl.com/your-account/keys")}>{localization.get_api_key[state.config.language]}</Button>
+                                    </div>}
                                 <div id="gemini-api-key">
                                     <p className={`mt-2 ${state.config.light_mode ? "text-black" : "text-slate-400"}`}>Gemini {localization.api_key[state.config.language]}</p>
                                     <div className="flex gap-2">

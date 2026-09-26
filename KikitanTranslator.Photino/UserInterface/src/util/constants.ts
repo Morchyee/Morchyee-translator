@@ -15,6 +15,9 @@ export type config = {
     recognizer: number;
     translator: number;
     desktop_translation: boolean;
+    desktop_translation_provider: "google" | "deepl" | "groq";
+    google_cloud_api_key: string;
+    deepl_api_key: string;
     quickstart_viewed: boolean;
     groq_api_key: string;
     gemini_api_key: string;
