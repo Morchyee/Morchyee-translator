@@ -92,3 +92,5 @@ VRChat microphone/chatbox/OSC, OpenVR overlay and old Tauri sources remain for c
 ## License
 
 Derived from Kikitan Translator. Original attribution and license are preserved in [LICENSE.md](LICENSE.md).
+
+For safe inspection of a portable release, `DesktopTranslator.exe --start-stopped --settings` opens the real settings window without starting audio capture, even if automatic start is saved. The flags do not change that saved preference. Translation favors recent pending speech during provider stalls and retains recognized source text when an older translation is skipped. See [performance and reliability findings](docs/PERFORMANCE.md) for queue policy, measurements, and acceptance limits.

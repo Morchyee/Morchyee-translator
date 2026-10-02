@@ -81,7 +81,7 @@ public class Program
         {
 
             Thread? settingsThread = null;
-            using var trayControl = new DesktopControlServer(command =>
+            void HandleTrayCommand(string command)
             {
                 switch (command)
                 {
@@ -103,7 +103,8 @@ public class Program
                         break;
                     case "exit": exit.TrySetResult(); break;
                 }
-            });
+            }
+            using var trayControl = new DesktopControlServer(HandleTrayCommand);
             try { manager.StartSubtitleWindow(); }
             catch (Exception e)
             {
@@ -111,7 +112,9 @@ public class Program
                 ShowSettingsWindow(appUrl, connector, messageHandler);
                 return;
             }
-            if (AppConfig.ConfigObject.AutoStart) manager.Start();
+            // Support safe product inspection without changing the user's saved startup preference.
+            if (AppConfig.ConfigObject.AutoStart && !args.Contains("--start-stopped")) manager.Start();
+            if (args.Contains("--settings")) HandleTrayCommand("settings");
             exit.Task.GetAwaiter().GetResult();
             manager.Stop();
             connector.WindowHandle?.Close();

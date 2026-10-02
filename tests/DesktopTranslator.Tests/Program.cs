@@ -178,6 +178,26 @@ Test("Provider cancellation reaches HTTP transport", async () =>
     try { await translator.TranslateAsync("hello", "en", "ja", stop.Token); throw new Exception("Expected cancellation"); }
     catch (OperationCanceledException) { Check(stop.IsCancellationRequested); }
 });
+Test("Long provider cooldown is not shortened or retried for realtime subtitles", async () =>
+{
+    foreach (var cooldownAttempt in new[] { 1, 3 })
+    {
+        AppConfig.ConfigObject = new() { GroqApiKey = "TEST_CREDENTIAL" };
+        var calls = 0;
+        using var handler = new FakeHttp((_, _) =>
+        {
+            calls++;
+            var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+            response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(calls == cooldownAttempt ? TimeSpan.FromMinutes(1) : TimeSpan.Zero);
+            return Task.FromResult(response);
+        });
+        using var translator = new GroqTranslator(new HttpClient(handler));
+        try { await translator.TranslateAsync("hello", "en", "ja", CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(2)); throw new Exception("Expected rate limit"); }
+        catch (InvalidOperationException e) { Check(calls == cooldownAttempt && e.Message.Contains("rate limit")); }
+        try { await translator.TranslateAsync("next", "en", "ja", CancellationToken.None); throw new Exception("Expected retained cooldown"); }
+        catch (InvalidOperationException e) { Check(calls == cooldownAttempt && e.Message.Contains("rate limit")); }
+    }
+});
 Test("Missing key fails before making a network request", async () =>
 {
     AppConfig.ConfigObject = new();
@@ -234,13 +254,40 @@ Test("Groq speech processing is bounded, serial and cancelled on stop", async ()
 Test("Translation backlog is bounded without discarding recognized source", async () =>
 {
     AppConfig.ConfigObject = new(); var r = new FakeRecognizer(); var t = new FakeTranslator(); var errors = new Errors();
-    using var pipeline = new Kikitan(r, t, errors, true);
+    using var pipeline = new Kikitan(r, t, errors, false);
     int sources = 0; pipeline.OnSubtitle += (_, _, _, final, update) => { if (final && !update) sources++; };
     pipeline.Start();
     for (var i = 0; i < 100; i++) r.Emit("source " + i, true);
     await t.Entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
     pipeline.Stop();
     Check(sources == 100 && errors.Messages.Any(m => m.Contains("queue is full")));
+});
+Test("Desktop backlog favors newest speech while retaining every recognized source", async () =>
+{
+    AppConfig.ConfigObject = new() { DeepLApiKey = "TEST_CREDENTIAL" };
+    var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var requested = new List<string>();
+    using var handler = new FakeHttp(async (request, token) =>
+    {
+        using var json = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+        lock (requested) requested.Add(json.RootElement.GetProperty("text")[0].GetString()!);
+        entered.TrySetResult();
+        await release.Task.WaitAsync(token);
+        return new(HttpStatusCode.OK) { Content = new StringContent("{\"translations\":[{\"text\":\"translated\"}]}") };
+    });
+    var r = new FakeRecognizer();
+    using var pipeline = new Kikitan(r, new DeepLTranslator(new HttpClient(handler)), new Errors(), true);
+    int sources = 0;
+    pipeline.OnSubtitle += (_, _, _, final, update) => { if (final && !update) sources++; };
+    pipeline.Start(); r.Emit("first", true);
+    await entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+    for (var i = 0; i < 100; i++) r.Emit("source " + i, true);
+    release.TrySetResult();
+    await Wait(() => { lock (requested) return requested.Count == 4; });
+    pipeline.Stop();
+    lock (requested) Check(requested.SequenceEqual(new[] { "first", "source 97", "source 98", "source 99" }));
+    Check(sources == 101);
 });
 Test("Malformed provider response preserves source and allows subsequent requests", async () =>
 {

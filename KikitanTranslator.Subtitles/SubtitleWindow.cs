@@ -365,6 +365,12 @@ public sealed class SubtitleWindow : Form
         if (_emptyState.Visible) throw new Exception("Empty state covered active subtitles");
         if (_history.Controls.Count != 5) throw new Exception("History was not bounded");
         var block = _blocks[lastId];
+        var captionFonts = block.Controls.Cast<Control>().Select(control => control.Font).ToArray();
+        block.ApplyPreferences();
+        var reappliedFonts = block.Controls.Cast<Control>().Select(control => control.Font).ToArray();
+        if (!captionFonts.Zip(reappliedFonts).All(pair => ReferenceEquals(pair.First, pair.Second)))
+            throw new Exception("Unchanged appearance replaced subtitle fonts");
+        foreach (var font in reappliedFonts) _ = font.GetHeight(); // Detect a disposed native font handle.
         ShowSubtitle(new DesktopSubtitleResult("Final original", "Translated text", true, lastId, true));
         if (!ReferenceEquals(_blocks[lastId], block) || _history.Controls.Count != 5) throw new Exception("Translation rebuilt or duplicated its block");
         _history.AutoScrollPosition = Point.Empty;
@@ -450,10 +456,20 @@ public sealed class SubtitleWindow : Form
 
         public void ApplyPreferences()
         {
-            var oldOriginal = _original.Font; var oldTranslated = _translated.Font;
-            _original.Font = new Font("Segoe UI", _preferences.FontSize);
-            _translated.Font = new Font("Segoe UI Semibold", _preferences.FontSize + 2);
-            oldOriginal.Dispose(); oldTranslated.Dispose();
+            // WinForms may retain its old instance when assigned an equal Font. Only replace a
+            // font when its size actually changes, then dispose the instance it no longer uses.
+            if (_original.Font.Size != _preferences.FontSize)
+            {
+                var old = _original.Font;
+                _original.Font = new Font("Segoe UI", _preferences.FontSize);
+                old.Dispose();
+            }
+            if (_translated.Font.Size != _preferences.FontSize + 2)
+            {
+                var old = _translated.Font;
+                _translated.Font = new Font("Segoe UI Semibold", _preferences.FontSize + 2);
+                old.Dispose();
+            }
             _original.Visible = _preferences.ShowOriginal;
             _translated.Visible = _preferences.ShowTranslation;
             UpdateWidth(Width);

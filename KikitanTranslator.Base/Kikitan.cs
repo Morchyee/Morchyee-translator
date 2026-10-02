@@ -16,7 +16,7 @@ public sealed class Kikitan : IDisposable
     private readonly bool _isLoopback;
     private readonly object _recognitionLock = new();
     private readonly CancellationTokenSource _lifetime = new();
-    private readonly Channel<PendingTranslation> _translations = Channel.CreateBounded<PendingTranslation>(32);
+    private readonly Channel<PendingTranslation> _translations;
     private readonly Channel<(string Source, string Translation)> _delayed = Channel.CreateBounded<(string, string)>(32);
     private Task? _translationWorker;
     private Task? _outputWorker;
@@ -26,7 +26,8 @@ public sealed class Kikitan : IDisposable
     private Guid _utteranceId = Guid.NewGuid();
     private DateTime _lastFailure;
 
-    private sealed record PendingTranslation(Guid Id, string Text, string Source, string Target, bool TranscriptionOnly);
+    private sealed record PendingTranslation(Guid Id, string Text, string Source, string Target, bool TranscriptionOnly,
+        long EnqueuedAt);
     public event OnRecognizerStatus? OnRecognizerStatusChanged;
     public event Action<Guid, string, string, bool, bool>? OnSubtitle;
 
@@ -36,6 +37,12 @@ public sealed class Kikitan : IDisposable
         _translator = translator;
         _errorHandler = errorHandler;
         _isLoopback = loopback;
+        // Desktop captions favor recent speech during provider stalls. Legacy chat output retains FIFO behavior.
+        _translations = Channel.CreateBounded<PendingTranslation>(new BoundedChannelOptions(loopback ? 3 : 32)
+        {
+            FullMode = loopback ? BoundedChannelFullMode.DropOldest : BoundedChannelFullMode.Wait,
+            SingleReader = true
+        });
         recognizer.OnRecognitionReceived += OnRecognition;
         recognizer.OnRecognizerStatusChanged += OnRecognizerStatus;
     }
@@ -68,7 +75,7 @@ public sealed class Kikitan : IDisposable
                 foreach (var output in _outputs.Where(o => !o.IsDelayed())) SendOutput(output, text, "", false);
                 if (final && !_translations.Writer.TryWrite(new PendingTranslation(id, text,
                         AppConfig.ConfigObject.SourceLanguage, AppConfig.ConfigObject.TargetLanguage,
-                        AppConfig.ConfigObject.SpeechToTextOnly)))
+                        AppConfig.ConfigObject.SpeechToTextOnly, System.Diagnostics.Stopwatch.GetTimestamp())))
                     ReportFailure("Translation queue is full. Original subtitles are retained.");
             }
             if (final) _utteranceId = Guid.NewGuid();
@@ -81,6 +88,9 @@ public sealed class Kikitan : IDisposable
             await foreach (var item in _translations.Reader.ReadAllAsync(token))
             {
                 if (token.IsCancellationRequested) break;
+                // Never spend another provider request on desktop speech that is already stale.
+                if (_isLoopback && System.Diagnostics.Stopwatch.GetElapsedTime(item.EnqueuedAt) > TimeSpan.FromSeconds(10))
+                    continue;
                 string translated = "";
                 try
                 {
