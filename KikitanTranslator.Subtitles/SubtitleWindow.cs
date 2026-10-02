@@ -212,6 +212,12 @@ public sealed class SubtitleWindow : Form
         if (result.Command == "close") { CloseForParent(); return; }
         if (result.State != null)
         {
+            _emptyState.Text = result.State switch
+            {
+                "Listening" => "Listening for speech\nPlay audio through your Windows playback device.",
+                "Connecting" => "Connecting to speech recognition\nSubtitles will appear when speech is recognized.",
+                _ => "Ready for subtitles\nStart translation, then play audio on your desktop."
+            };
             _tray.Text = "Desktop Translator — " + result.State;
             if (_startItem != null) _startItem.Enabled = result.State == "Stopped";
             if (_stopItem != null) _stopItem.Enabled = result.State != "Stopped";
@@ -304,6 +310,13 @@ public sealed class SubtitleWindow : Form
     private void VerifyPresentation()
     {
         if (!_emptyState.Visible) throw new Exception("Missing subtitle empty state");
+        foreach (var state in new[] { "Connecting", "Listening", "Stopped" })
+        {
+            ShowSubtitle(new DesktopSubtitleResult("", "", false, Guid.Empty, State: state));
+            var expected = state == "Stopped" ? "Ready" : state;
+            if (!_emptyState.Text.StartsWith(expected) || !_emptyState.Visible || _model.Entries.Count != 0)
+                throw new Exception("Empty subtitle state does not reflect the active session");
+        }
         using (var appearance = new SubtitleAppearanceDialog(new SubtitlePreferences()))
         {
             appearance.VerifyPreview();

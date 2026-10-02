@@ -14,10 +14,11 @@ export function desktopTheme(light: boolean) {
             button: {textTransform: "none", fontWeight: 600, fontSize: 13}},
         shape: {borderRadius: 6},
         components: {
+            MuiButtonBase: {defaultProps: {disableRipple: true}},
             MuiButton: {defaultProps: {disableElevation: true, size: "small"}, styleOverrides: {root: {minHeight: 34, paddingInline: 14}}},
             MuiTextField: {defaultProps: {size: "small"}},
             MuiSelect: {defaultProps: {size: "small"}},
-            MuiSwitch: {defaultProps: {size: "small"}},
+            MuiSwitch: {defaultProps: {size: "small"}, styleOverrides: {switchBase: {"&.Mui-focusVisible .MuiSwitch-thumb": {outline: `2px solid ${light ? "#235fc4" : "#8ab4ff"}`, outlineOffset: 3}}}},
             MuiAlert: {styleOverrides: {root: {fontSize: 13, alignItems: "center"}}},
             MuiOutlinedInput: {styleOverrides: {root: {fontSize: 13}, notchedOutline: {borderColor: light ? "#7d899a" : "#637187"}}},
             MuiMenuItem: {styleOverrides: {root: {fontSize: 13, minHeight: 34}}},

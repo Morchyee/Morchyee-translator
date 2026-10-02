@@ -45,3 +45,10 @@
 @media (max-width:850px) { .desktop-header { flex-wrap:wrap; padding:14px 18px; } .desktop-main { padding:24px; } .desktop-app { grid-template-columns:176px minmax(0,1fr); } .setting-row { flex-wrap:wrap; gap:10px; } .setting-control { max-width:100%; } }
 @media (max-width:650px) { .desktop-app { grid-template-columns:1fr; grid-template-rows:auto auto minmax(0,1fr); } .desktop-sidebar { border-right:0; border-bottom:1px solid var(--line); padding:6px 10px; } .desktop-sidebar nav { flex-direction:row; flex-wrap:wrap; } .desktop-sidebar nav button { width:auto; } .sidebar-footer { display:none; } .desktop-main { padding:20px; } .language-direction { gap:10px; } .translator-state { margin-right:0; } }
 @media (prefers-reduced-motion:reduce) { .desktop-app *, .desktop-app *::before, .desktop-app *::after { transition:none!important; animation:none!important; } }
+
+@media (forced-colors:active) {
+    .desktop-sidebar nav button.selected { outline:1px solid Highlight; outline-offset:-1px; }
+    .desktop-sidebar nav button.selected::before { background:Highlight; forced-color-adjust:none; }
+    .desktop-app button:focus-visible, .desktop-app a:focus-visible { outline-color:Highlight; }
+    .credential-editor, .subtitle-preview { border-color:CanvasText; }
+}
