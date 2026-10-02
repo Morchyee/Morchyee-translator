@@ -10,14 +10,14 @@ internal static class Program
         ApplicationConfiguration.Initialize();
         if (args.Contains("--self-test"))
         {
-            using var testWindow = new SubtitleWindow(null, true);
+            using var testWindow = new SubtitleWindow(null, true, args.Length > 1 ? args[1] : "en");
             Application.Run(testWindow);
             return testWindow.TestExitCode;
         }
         using var instance = new Mutex(true, @"Local\DesktopTranslator.Subtitles-" + Environment.UserDomainName + "-" + Environment.UserName, out var first);
         if (!first) return 0;
         var parentId = args.Length > 0 && int.TryParse(args[0], out var id) ? id : (int?)null;
-        Application.Run(new SubtitleWindow(parentId));
+        Application.Run(new SubtitleWindow(parentId, locale: args.Length > 1 ? args[1] : null));
         return 0;
     }
 }

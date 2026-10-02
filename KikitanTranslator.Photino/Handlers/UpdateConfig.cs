@@ -24,6 +24,10 @@ public class UpdateConfig(Manager manager) : IHandler
 
         switch (d.Field)
         {
+            case "ui_language":
+                AppConfig.ConfigObject.UiLanguage = (string)d.Value;
+                doNotRestart = true;
+                break;
             case "auto_start":
                 AppConfig.ConfigObject.AutoStart = (bool)d.Value;
                 doNotRestart = true;

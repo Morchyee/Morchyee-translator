@@ -6,4 +6,5 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
     </PropertyGroup>
+    <ItemGroup><ProjectReference Include="../KikitanTranslator.Resources/KikitanTranslator.Resources.csproj" /></ItemGroup>
 </Project>

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
+using KikitanTranslator.Resources;
 
 namespace KikitanTranslator.Subtitles;
 
@@ -14,7 +15,7 @@ public sealed class SubtitleWindow : Form
     private readonly SubtitleHistory _model;
     private readonly System.Windows.Forms.Timer _saveTimer = new() { Interval = 700 };
     private readonly FlowLayoutPanel _history = new BufferedHistory();
-    private readonly Label _emptyState = new() { Text = "Ready for subtitles\nStart translation, then play audio on your desktop.", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = SubtitlePalette.Original, AccessibleName = "Subtitle empty state" };
+    private readonly Label _emptyState = new() { Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = SubtitlePalette.Original };
     private readonly CancellationTokenSource _readerCancellation = new();
     private readonly NotifyIcon _tray;
     private readonly int? _parentId;
@@ -24,16 +25,25 @@ public sealed class SubtitleWindow : Form
     private ToolStripItem? _startItem;
     private ToolStripItem? _stopItem;
     private SubtitleAppearanceDialog? _appearanceDialog;
-
-    public SubtitleWindow(int? parentId, bool selfTest = false)
+    private string _locale;
+    private readonly Dictionary<string, Font> _emptyFonts = new();
+    private string _sessionState = "Stopped";
+    private string T(string key) => DesktopText.Get(_locale, key);
+    private ToolStripItem LocalizedItem(ContextMenuStrip menu, string key, EventHandler action)
     {
+        var item = menu.Items.Add(T(key), null, action); item.Tag = key; return item;
+    }
+
+    public SubtitleWindow(int? parentId, bool selfTest = false, string? locale = null)
+    {
+        _locale = DesktopText.Resolve(locale);
         _selfTest = selfTest;
         _preferences = selfTest ? new SubtitlePreferences() : SubtitlePreferences.Load();
         _parentId = parentId;
         _model = new SubtitleHistory(_preferences.HistoryCount);
         AutoScaleMode = AutoScaleMode.Dpi;
         DoubleBuffered = true;
-        Text = "Desktop Translator — Subtitles";
+        Text = "Desktop Translator — " + T("navigation.subtitles");
         TopMost = _preferences.AlwaysOnTop;
         FormBorderStyle = FormBorderStyle.SizableToolWindow;
         StartPosition = FormStartPosition.Manual;
@@ -41,6 +51,7 @@ public sealed class SubtitleWindow : Form
         Size = new Size(740, 320);
         BackColor = SubtitlePalette.Background;
         _emptyState.Font = new Font("Segoe UI", 12);
+        _emptyFonts["en"] = _emptyState.Font;
         Opacity = _preferences.Opacity;
 
         var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 720);
@@ -69,16 +80,16 @@ public sealed class SubtitleWindow : Form
         _history.Resize += (_, _) => ResizeBlocks();
 
         var menu = new ContextMenuStrip();
-        _startItem = menu.Items.Add("Start translation", null, (_, _) => _ = SendCommandAsync("start"));
-        _stopItem = menu.Items.Add("Stop translation", null, (_, _) => _ = SendCommandAsync("stop"));
-        menu.Items.Add("Open settings", null, (_, _) => _ = SendCommandAsync("settings"));
-        var showHide = menu.Items.Add("Hide subtitles", null, (_, _) =>
+        _startItem = LocalizedItem(menu, "common.start", (_, _) => _ = SendCommandAsync("start"));
+        _stopItem = LocalizedItem(menu, "common.stop", (_, _) => _ = SendCommandAsync("stop"));
+        LocalizedItem(menu, "common.settings", (_, _) => _ = SendCommandAsync("settings"));
+        var showHide = LocalizedItem(menu, "common.hideSubtitles", (_, _) =>
         {
             if (Visible) Hide(); else Show();
         });
-        VisibleChanged += (_, _) => showHide.Text = Visible ? "Hide subtitles" : "Show subtitles";
-        menu.Items.Add("Subtitle appearance…", null, (_, _) => EditPreferences());
-        menu.Items.Add("Exit", null, async (_, _) =>
+        VisibleChanged += (_, _) => { showHide.Tag = Visible ? "common.hideSubtitles" : "common.showSubtitles"; showHide.Text = T((string)showHide.Tag); };
+        LocalizedItem(menu, "native.appearance", (_, _) => EditPreferences());
+        LocalizedItem(menu, "common.exit", async (_, _) =>
         {
             await SendCommandAsync("exit");
             _allowClose = true;
@@ -87,11 +98,12 @@ public sealed class SubtitleWindow : Form
         _tray = new NotifyIcon
         {
             Icon = SystemIcons.Application,
-            Text = "Desktop Translator — Subtitles",
+            Text = "Desktop Translator",
             ContextMenuStrip = menu,
             Visible = !selfTest
         };
         _tray.DoubleClick += (_, _) => { Show(); Activate(); };
+        ApplyLocale(_locale);
 
         if (parentId.HasValue)
         {
@@ -153,6 +165,11 @@ public sealed class SubtitleWindow : Form
         _allowClose = true;
         Close();
     }
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+        if (disposing) foreach (var font in _emptyFonts.Values) font.Dispose();
+    }
 
     private async Task SendCommandAsync(string command)
     {
@@ -204,28 +221,44 @@ public sealed class SubtitleWindow : Form
         }
     }
 
+    private void ApplyLocale(string locale)
+    {
+        _locale = DesktopText.Resolve(locale);
+        Text = "Desktop Translator — " + T("navigation.subtitles");
+        if (!_emptyFonts.TryGetValue(_locale, out var font))
+            _emptyFonts[_locale] = font = new Font(DesktopText.FontFamily(_locale), 12);
+        _emptyState.Font = font;
+        _emptyState.AccessibleName = T("native.emptyName");
+        foreach (ToolStripItem item in _tray.ContextMenuStrip!.Items)
+            if (item.Tag is string key) item.Text = T(key);
+        _appearanceDialog?.ApplyLocale(_locale);
+        UpdateStatusText();
+    }
+    private void UpdateStatusText()
+    {
+        var key = _sessionState switch { "Listening" => "native.emptyListening", "Connecting" => "native.emptyConnecting", _ => "native.emptyStopped" };
+        _emptyState.Text = T(key);
+        var status = _sessionState switch { "Listening" => "common.listening", "Connecting" => "common.connecting", _ => "common.stopped" };
+        _tray.Text = "Desktop Translator — " + T(status);
+    }
     private void ShowSubtitle(DesktopSubtitleResult result)
     {
+        if (result.UiLanguage != null && result.UiLanguage != _locale) ApplyLocale(result.UiLanguage);
         if (result.Command == "appearance") { EditPreferences(); return; }
         if (result.Command == "show") { Show(); Activate(); return; }
         if (result.Command == "hide") { Hide(); return; }
         if (result.Command == "close") { CloseForParent(); return; }
         if (result.State != null)
         {
-            _emptyState.Text = result.State switch
-            {
-                "Listening" => "Listening for speech\nPlay audio through your Windows playback device.",
-                "Connecting" => "Connecting to speech recognition\nSubtitles will appear when speech is recognized.",
-                _ => "Ready for subtitles\nStart translation, then play audio on your desktop."
-            };
-            _tray.Text = "Desktop Translator — " + result.State;
+            _sessionState = result.State;
+            UpdateStatusText();
             if (_startItem != null) _startItem.Enabled = result.State == "Stopped";
             if (_stopItem != null) _stopItem.Enabled = result.State != "Stopped";
             return;
         }
         if (result.Error != null)
         {
-            _tray.ShowBalloonTip(5000, "Desktop Translator", result.Error, ToolTipIcon.Warning);
+            _tray.ShowBalloonTip(5000, "Desktop Translator", T(DesktopText.ErrorKey(result.Error)) + "\n" + result.Error, ToolTipIcon.Warning);
             return;
         }
         if (!_model.Apply(result)) return;
@@ -269,7 +302,7 @@ public sealed class SubtitleWindow : Form
             _preferences.X = Left; _preferences.Y = Top;
             _preferences.Width = Width; _preferences.Height = Height;
         }
-        _preferences.Save();
+        _preferences.Save(_locale);
     }
     protected override CreateParams CreateParams
     {
@@ -290,7 +323,7 @@ public sealed class SubtitleWindow : Form
     private void EditPreferences()
     {
         if (_appearanceDialog != null) { _appearanceDialog.Activate(); return; }
-        using var dialog = new SubtitleAppearanceDialog(_preferences);
+        using var dialog = new SubtitleAppearanceDialog(_preferences, _locale);
         _appearanceDialog = dialog;
         try
         {
@@ -313,11 +346,11 @@ public sealed class SubtitleWindow : Form
         foreach (var state in new[] { "Connecting", "Listening", "Stopped" })
         {
             ShowSubtitle(new DesktopSubtitleResult("", "", false, Guid.Empty, State: state));
-            var expected = state == "Stopped" ? "Ready" : state;
-            if (!_emptyState.Text.StartsWith(expected) || !_emptyState.Visible || _model.Entries.Count != 0)
+            var expected = T(state switch { "Listening" => "native.emptyListening", "Connecting" => "native.emptyConnecting", _ => "native.emptyStopped" });
+            if (_emptyState.Text != expected || !_emptyState.Visible || _model.Entries.Count != 0)
                 throw new Exception("Empty subtitle state does not reflect the active session");
         }
-        using (var appearance = new SubtitleAppearanceDialog(new SubtitlePreferences()))
+        using (var appearance = new SubtitleAppearanceDialog(new SubtitlePreferences(), _locale))
         {
             appearance.VerifyPreview();
             var settings = new SubtitlePreferences(); appearance.ApplyTo(settings);
@@ -339,6 +372,16 @@ public sealed class SubtitleWindow : Form
         if (_history.VerticalScroll.Value != 0) throw new Exception("Translation forced scroll to bottom");
         ShowSubtitle(new DesktopSubtitleResult("new source", "", true, Guid.NewGuid()));
         if (_history.VerticalScroll.Value != 0) throw new Exception("New source forced scroll to bottom");
+        var entries = _model.Entries.ToArray();
+        var originalLocale = _locale;
+        foreach (var locale in DesktopText.Locales)
+        {
+            ShowSubtitle(new DesktopSubtitleResult("", "", false, Guid.Empty, State: "Listening", UiLanguage: locale));
+            if (_history.VerticalScroll.Value != 0 || !entries.SequenceEqual(_model.Entries) || !ReferenceEquals(_blocks[lastId], block))
+                throw new Exception("Interface localization changed subtitle content, controls, or scroll");
+            if (_startItem!.Text != T("common.start") || _stopItem!.Text != T("common.stop")) throw new Exception("Tray localization did not update");
+        }
+        ApplyLocale(originalLocale);
         _history.AutoScrollPosition = new Point(0, Math.Max(0, _history.VerticalScroll.Maximum - _history.VerticalScroll.LargeChange + 1));
         ShowSubtitle(new DesktopSubtitleResult("latest source", "", true, Guid.NewGuid()));
         if (!IsAtBottom()) throw new Exception("New source failed to anchor at bottom");

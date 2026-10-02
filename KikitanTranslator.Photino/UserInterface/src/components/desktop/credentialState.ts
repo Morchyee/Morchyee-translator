@@ -1,8 +1,10 @@
+import type {MessageKey} from "../../i18n/localization";
+
 export type CredentialDraft = {
     value: string;
     requestId: number | null;
     operation: "save" | "remove";
-    message: string;
+    message: MessageKey | "";
     severity: "success" | "warning";
 };
 export type CredentialDrafts = Record<string, CredentialDraft>;
@@ -17,7 +19,7 @@ export type CredentialAction =
 export function credentialReducer(state: CredentialDrafts, action: CredentialAction): CredentialDrafts {
     if (action.type === "failed") {
         return Object.fromEntries(Object.entries(state).map(([field, draft]) => [field, draft.requestId === null ? draft : {
-            ...draft, requestId: null, message: "Save was not confirmed. Check the message above and try again.", severity: "warning"
+            ...draft, requestId: null, message: "credential.failed", severity: "warning"
         }]));
     }
     const draft = state[action.field] || emptyCredential;
@@ -33,11 +35,11 @@ export function credentialReducer(state: CredentialDrafts, action: CredentialAct
         case "saved":
             if (draft.requestId !== action.requestId) return state;
             next = {...draft, value: draft.operation === "save" ? "" : draft.value, requestId: null,
-                message: draft.operation === "save" ? "API key saved securely." : "Saved key removed.", severity: "success"};
+                message: draft.operation === "save" ? "credential.saved" : "credential.removed", severity: "success"};
             break;
         case "timeout":
             if (draft.requestId !== action.requestId) return state;
-            next = {...draft, requestId: null, message: "Save was not confirmed. Your draft is still here; try again.", severity: "warning"};
+            next = {...draft, requestId: null, message: "credential.timeout", severity: "warning"};
             break;
     }
     return {...state, [action.field]: next};

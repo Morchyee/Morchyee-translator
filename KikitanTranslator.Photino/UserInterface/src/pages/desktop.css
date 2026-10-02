@@ -1,6 +1,12 @@
 .desktop-app { --line:#343e4d; --muted:#aebacc; --sidebar:#1c212a; --hover:#29313d; --accent:#8ab4ff; --selected:#283a55; height:100dvh; display:grid; grid-template-columns:190px minmax(0,1fr); grid-template-rows:auto minmax(0,1fr); font-family:"Segoe UI Variable","Segoe UI",system-ui,sans-serif; font-size:13px; }
 .desktop-app[data-theme="light"] { --line:#dde2e9; --muted:#586373; --sidebar:#eff2f6; --hover:#e3e8f0; --accent:#235fc4; --selected:#dce8fc; color-scheme:light; }
 .desktop-app[data-theme="dark"] { color-scheme:dark; }
+.desktop-app[lang="zh-CN"] { font-family:"Microsoft YaHei UI","Microsoft YaHei","Segoe UI",system-ui,sans-serif; }
+.desktop-app[lang="ja-JP"] { font-family:"Yu Gothic UI","Yu Gothic",Meiryo,"Segoe UI",system-ui,sans-serif; }
+.desktop-app details { margin-top:8px; overflow-wrap:anywhere; }
+.desktop-app summary { cursor:pointer; }
+.desktop-sidebar nav button span { overflow-wrap:anywhere; }
+.setting-control .MuiInputBase-root { max-width:100%; }
 .desktop-app *, .desktop-app *::before, .desktop-app *::after { box-sizing:border-box; }
 .desktop-app button:focus-visible, .desktop-app a:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
 .desktop-header { grid-column:1/-1; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:16px 22px; border-bottom:1px solid var(--line); }

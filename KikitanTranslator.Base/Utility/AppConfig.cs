@@ -7,6 +7,20 @@ namespace KikitanTranslator.Utility;
 
 public class ConfigObject : INotifyPropertyChanged
 {
+    // Missing preference follows Windows UI culture. An explicit choice is persisted independently of audio languages.
+    [JsonProperty("ui_language")] private string? _uiLanguage;
+    [JsonIgnore]
+    public string UiLanguage
+    {
+        get => KikitanTranslator.Resources.DesktopText.Resolve(_uiLanguage);
+        set
+        {
+            if (!KikitanTranslator.Resources.DesktopText.Locales.Contains(value)) throw new ArgumentException("Unsupported interface language.");
+            if (_uiLanguage == value) return;
+            _uiLanguage = value;
+            OnPropertyChanged();
+        }
+    }
     [JsonProperty("quickstart_viewed")] private bool _quickstartViewed;
 
     [JsonIgnore]
@@ -437,6 +451,7 @@ public static class AppConfig
     public static Newtonsoft.Json.Linq.JObject PublicConfig()
     {
         var config = Newtonsoft.Json.Linq.JObject.FromObject(ConfigObject);
+        config["ui_language"] = ConfigObject.UiLanguage;
         foreach (var field in SecretFields)
         {
             config[field + "_configured"] = !string.IsNullOrWhiteSpace((string?)config[field]);

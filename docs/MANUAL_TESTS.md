@@ -19,6 +19,18 @@ Record machine/Windows version, playback hardware, monitor scale, provider and p
 
 These interaction checks are separate from provider/hardware tests above. Automated bridge/native tests do not substitute for a real Photino keyboard or monitor walkthrough.
 
+## Multilingual acceptance
+
+1. Switch General → Interface language among English, 简体中文, and 日本語. Confirm each section, accessible control name, tray action, waiting state, and open appearance dialog changes language without losing unsaved credential/appearance edits.
+2. With English → Chinese translation running, switch the interface to Japanese. Verify source/target, caption content and IDs, scroll position, and recognition session remain unchanged. Relaunch and confirm the explicit UI preference persists.
+3. On isolated profiles without `ui_language`, verify Windows Simplified Chinese/Japanese detection and English fallback elsewhere. Change the Windows language after explicitly choosing a locale; the choice must remain. Check existing secure credentials and subtitle preferences still load.
+4. In each locale test missing keys, wrong credentials, rate limits, and lost network. Confirm localized guidance plus useful technical details, with no secrets shown. Follow the hardware/provider procedure above; browser fixtures simulate these interactions only.
+5. Review all locales in real Photino at 125%/150%/175%, including keyboard/screen-reader and Windows high-contrast behavior. Check longer Japanese controls and native Save/Cancel at minimum size.
+
+Automated coverage: 14 frontend tests, 18 .NET regressions, and subtitle self-tests in all three locales. Browser review covered 90 section/locale/theme/size combinations at 600×600, 900×700, and 1280×800 CSS viewports without horizontal overflow. Native render snapshots were reviewed. Hardware, service connectivity, native screen-reader, high-contrast, and mixed-monitor DPI results are not claimed.
+
+## Desktop interaction checklist
+
 1. Open each section in dark and light mode at 900×600 and a larger window. Verify header actions remain reachable, only content scrolls, rows align, provider names fit, and no horizontal overflow occurs.
 2. Repeat at 125%, 150%, and 175% scaling and move settings/subtitles between monitors. Check CJK wrapping, focus outlines, and the native appearance dialog's scroll area and fixed Save/Cancel actions.
 3. Use only Tab, Shift+Tab, Enter, Space, arrows, and Escape. Reach navigation, language/provider selects, switches, password editor, native number controls, Save/Cancel, and the skip link. Review with a screen reader and Windows high-contrast mode.

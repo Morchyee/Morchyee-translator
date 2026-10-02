@@ -1,4 +1,5 @@
 export type config = {
+    ui_language?: "en" | "zh-CN" | "ja-JP";
     update_waiting: boolean;
     auto_start: boolean;
     groq_api_key_configured: boolean;

@@ -30,7 +30,7 @@ internal sealed class SubtitlePreferences
         }
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException) { return new(); }
     }
-    public void Save()
+    public void Save(string? locale = null)
     {
         try
         {
@@ -40,7 +40,7 @@ internal sealed class SubtitlePreferences
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
-            MessageBox.Show("Could not save subtitle settings. Check access to your application data folder.", "Desktop Translator");
+            MessageBox.Show(KikitanTranslator.Resources.DesktopText.Get(KikitanTranslator.Resources.DesktopText.Resolve(locale), "errors.subtitleSave"), "Desktop Translator");
         }
     }
 }

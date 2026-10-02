@@ -324,6 +324,7 @@ public class Manager : IDisposable
             if (!File.Exists(path)) throw new InvalidOperationException("Subtitle executable is missing. Extract the complete release folder.");
             var startInfo = new ProcessStartInfo(path) { UseShellExecute = false };
             startInfo.ArgumentList.Add(Environment.ProcessId.ToString());
+            startInfo.ArgumentList.Add(AppConfig.ConfigObject.UiLanguage);
             _subtitleProcess?.Dispose();
             _subtitleProcess = Process.Start(startInfo);
         }

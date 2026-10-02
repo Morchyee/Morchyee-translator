@@ -15,6 +15,16 @@ function bridge() {
     return {api: exports, sent, respond: (method, data) => receive(JSON.stringify({method, data: JSON.stringify(data)}))};
 }
 
+test("Interface language updates only its dedicated configuration field", () => {
+    const {api, sent} = bridge();
+    api.setConfig("ui_language", "ja-JP");
+    const request = JSON.parse(sent[0].data);
+    assert.equal(request.field, "ui_language"); assert.equal(request.value, "ja-JP");
+    assert.equal(sent.length, 1);
+    assert.equal(Object.hasOwn(request, "source_language"), false);
+    assert.equal(Object.hasOwn(request, "target_language"), false);
+});
+
 test("A credential save sends only its draft and waits for an explicit acknowledgement", () => {
     const {api, sent, respond} = bridge();
     const saved = [];

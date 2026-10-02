@@ -124,7 +124,7 @@ public class Program
 
     private static void ShowSettingsWindow(string appUrl, Connector connector, MessageHandler messageHandler)
     {
-        string windowTitle = AppConfig.ConfigObject.DesktopTranslation ? "Desktop Translator — Settings" : "Kikitan Translator (Legacy)";
+        string windowTitle = AppConfig.ConfigObject.DesktopTranslation ? "Desktop Translator" : "Kikitan Translator (Legacy)";
 
         var iconFile = OperatingSystem.IsWindows() ? "kikitan_logo.ico" : "icon.png";
 

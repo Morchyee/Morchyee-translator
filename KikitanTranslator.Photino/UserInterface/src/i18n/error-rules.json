@@ -1,0 +1,8 @@
+[
+  {"key":"errors.authentication","patterns":["key is missing","rejected credentials","account permissions"]},
+  {"key":"errors.rateLimit","patterns":["rate limit","http 429"]},
+  {"key":"errors.quota","patterns":["quota exhausted","http 456"]},
+  {"key":"errors.request","patterns":["rejected the request","unsupported source","unsupported target","unsupported translation","supported source and target"]},
+  {"key":"errors.save","patterns":["could not be saved","could not save","access is denied","credential protection"]},
+  {"key":"errors.network","patterns":["timed out","network","returned no text","http 5"]}
+]

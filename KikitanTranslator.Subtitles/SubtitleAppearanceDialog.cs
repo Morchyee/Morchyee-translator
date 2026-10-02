@@ -1,3 +1,5 @@
+using KikitanTranslator.Resources;
+
 namespace KikitanTranslator.Subtitles;
 
 internal static class SubtitlePalette
@@ -21,12 +23,18 @@ internal sealed class SubtitleAppearanceDialog : Form
     private readonly Label _sampleOriginal = new() { AutoSize = true, ForeColor = SubtitlePalette.Original, Text = "A little clarity makes all the difference." };
     private readonly Label _sampleTranslation = new() { AutoSize = true, ForeColor = SubtitlePalette.Translation, Text = "少しの明瞭さが、大きな違いを生みます。" };
     private readonly FlowLayoutPanel _preview;
-    private readonly Font _headingFont = new("Segoe UI", 11, FontStyle.Bold);
-    private readonly Font _dialogFont = new("Segoe UI", 10);
+    private Font _headingFont = new("Segoe UI", 11, FontStyle.Bold);
+    private Font _dialogFont = new("Segoe UI", 10);
+    private readonly Dictionary<string, (Font Body, Font Heading)> _localeFonts = new();
 
-    public SubtitleAppearanceDialog(SubtitlePreferences settings)
+    private string _locale;
+    private string T(string key) => DesktopText.Get(_locale, key);
+
+    public SubtitleAppearanceDialog(SubtitlePreferences settings, string? locale = null)
     {
-        Text = "Desktop Translator — Subtitle appearance";
+        _locale = DesktopText.Resolve(locale);
+        _localeFonts["en"] = (_dialogFont, _headingFont);
+        Text = "Desktop Translator — " + T("native.appearanceTitle");
         AutoScaleMode = AutoScaleMode.Dpi;
         AutoScaleDimensions = new SizeF(96, 96);
         Font = _dialogFont;
@@ -49,39 +57,39 @@ internal sealed class SubtitleAppearanceDialog : Form
         {
             var row = content.RowCount++; content.Controls.Add(control, 0, row); content.SetColumnSpan(control, 2);
         }
-        void Heading(string text) => Full(new Label { Text = text, AutoSize = true, Font = _headingFont, Margin = new Padding(0, 16, 0, 10) });
-        Heading("Bilingual subtitles");
+        void Heading(string text) => Full(new Label { Text = T(text), Tag = text, AutoSize = true, Font = _headingFont, Margin = new Padding(0, 16, 0, 10) });
+        Heading("subtitles.bilingual");
         _preview = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false,
             AutoSize = true, Dock = DockStyle.Top, BackColor = SubtitlePalette.Background, Padding = new Padding(16), Margin = new Padding(0, 0, 0, 6) };
         _preview.Controls.Add(_sampleOriginal); _preview.Controls.Add(_sampleTranslation); Full(_preview);
-        Full(new Label { Text = "Local sample · font size and text visibility update here as you edit.", AutoSize = true, ForeColor = SystemColors.GrayText });
-        Heading("Text and history");
+        Full(new Label { Text = T("native.sampleHelp"), Tag = "native.sampleHelp", AutoSize = true, ForeColor = SystemColors.GrayText });
+        Heading("native.textHistory");
         NumericUpDown Number(string text, decimal value, decimal min, decimal max)
         {
             var row = content.RowCount++;
-            content.Controls.Add(new Label { Text = text, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 7, 8, 7) }, 0, row);
-            var number = new NumericUpDown { Minimum = min, Maximum = max, Value = value, Dock = DockStyle.Fill, AccessibleName = text, Margin = new Padding(0, 5, 0, 5) };
+            content.Controls.Add(new Label { Text = T(text), Tag = text, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 7, 8, 7) }, 0, row);
+            var number = new NumericUpDown { Minimum = min, Maximum = max, Value = value, Dock = DockStyle.Fill, AccessibleName = T(text), Tag = text, Margin = new Padding(0, 5, 0, 5) };
             content.Controls.Add(number, 1, row); return number;
         }
         CheckBox Toggle(string text, bool value)
         {
-            var toggle = new CheckBox { Text = text, Checked = value, AutoSize = true, Margin = new Padding(0, 6, 0, 6), AccessibleName = text };
+            var toggle = new CheckBox { Text = T(text), Tag = text, Checked = value, AutoSize = true, Margin = new Padding(0, 6, 0, 6), AccessibleName = T(text) };
             Full(toggle); return toggle;
         }
-        _font = Number("Original font size (points)", settings.FontSize, 10, 36);
-        _history = Number("Subtitle history entries", settings.HistoryCount, 3, 50);
-        _original = Toggle("Show original text", settings.ShowOriginal);
-        _translation = Toggle("Show translation", settings.ShowTranslation);
-        Heading("Window behavior");
-        _opacity = Number("Window opacity (%)", (decimal)(settings.Opacity * 100), 25, 100);
-        Full(new Label { Text = "Opacity affects the entire window, including text. Preview stays opaque for readability.", AutoSize = true, ForeColor = SystemColors.GrayText });
-        _top = Toggle("Always on top", settings.AlwaysOnTop);
-        _locked = Toggle("Lock position and size", settings.LockPosition);
-        _click = Toggle("Click through to the app behind subtitles", settings.ClickThrough);
-        Full(new Label { Text = "Use the tray menu or settings to unlock the window or disable click through.", AutoSize = true, ForeColor = SystemColors.GrayText });
+        _font = Number("native.font", settings.FontSize, 10, 36);
+        _history = Number("native.history", settings.HistoryCount, 3, 50);
+        _original = Toggle("native.original", settings.ShowOriginal);
+        _translation = Toggle("native.translation", settings.ShowTranslation);
+        Heading("subtitles.behavior");
+        _opacity = Number("native.opacity", (decimal)(settings.Opacity * 100), 25, 100);
+        Full(new Label { Text = T("native.opacityHelp"), Tag = "native.opacityHelp", AutoSize = true, ForeColor = SystemColors.GrayText });
+        _top = Toggle("native.top", settings.AlwaysOnTop);
+        _locked = Toggle("native.lock", settings.LockPosition);
+        _click = Toggle("native.click", settings.ClickThrough);
+        Full(new Label { Text = T("native.unlockHelp"), Tag = "native.unlockHelp", AutoSize = true, ForeColor = SystemColors.GrayText });
         var actions = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(0, 14, 0, 0) };
-        var save = new Button { Text = "Save changes", AutoSize = true, DialogResult = DialogResult.OK, Padding = new Padding(8, 3, 8, 3) };
-        var cancel = new Button { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel, Padding = new Padding(8, 3, 8, 3) };
+        var save = new Button { Text = T("common.saveChanges"), Tag = "common.saveChanges", AutoSize = true, DialogResult = DialogResult.OK, Padding = new Padding(8, 3, 8, 3) };
+        var cancel = new Button { Text = T("common.cancel"), Tag = "common.cancel", AutoSize = true, DialogResult = DialogResult.Cancel, Padding = new Padding(8, 3, 8, 3) };
         actions.Controls.Add(save); actions.Controls.Add(cancel); root.Controls.Add(actions, 0, 1);
         AcceptButton = save; CancelButton = cancel;
         _font.ValueChanged += (_, _) => UpdatePreview();
@@ -92,7 +100,37 @@ internal sealed class SubtitleAppearanceDialog : Form
             foreach (Control control in content.Controls)
                 if (control is Label && content.GetColumnSpan(control) == 2) control.MaximumSize = new Size(Math.Max(100, content.ClientSize.Width - content.Padding.Horizontal), 0);
         };
+        ApplyLocale(_locale);
         UpdatePreview();
+    }
+    public void ApplyLocale(string locale)
+    {
+        _locale = DesktopText.Resolve(locale);
+        Text = "Desktop Translator — " + T("native.appearanceTitle");
+        // WinForms can retain the original Font when an equal value is assigned.
+        // Keep every assigned font alive until this dialog is disposed.
+        if (!_localeFonts.TryGetValue(_locale, out var fonts))
+        {
+            fonts = (new Font(DesktopText.FontFamily(_locale), 10), new Font(DesktopText.FontFamily(_locale), 11, FontStyle.Bold));
+            _localeFonts[_locale] = fonts;
+        }
+        _headingFont = fonts.Heading; _dialogFont = fonts.Body;
+        SuspendLayout();
+        Font = _dialogFont;
+        void RefreshText(Control parent)
+        {
+            foreach (Control control in parent.Controls)
+            {
+                if (control.Tag is string key)
+                {
+                    if (control is not NumericUpDown) control.Text = T(key);
+                    control.AccessibleName = T(key);
+                    if (key is "subtitles.bilingual" or "native.textHistory" or "subtitles.behavior") control.Font = _headingFont;
+                }
+                RefreshText(control);
+            }
+        }
+        RefreshText(this); ResumeLayout(true);
     }
     private void ResizePreview()
     {
@@ -126,6 +164,14 @@ internal sealed class SubtitleAppearanceDialog : Form
         _original.Checked = false;
         if (_sampleOriginal.Visible) throw new Exception("Subtitle preview did not hide original text");
         _original.Checked = true; _font.Value = 14;
+        var initialLocale = _locale;
+        foreach (var locale in DesktopText.Locales)
+        {
+            ApplyLocale(locale);
+            if (_original.Text != T("native.original") || _font.AccessibleName != T("native.font") || _font.Value != 14)
+                throw new Exception("Appearance localization changed preferences or missed accessible names");
+        }
+        ApplyLocale(initialLocale);
         Size = MinimumSize;
         PerformLayout();
         if (_sampleTranslation.Width > _preview.ClientSize.Width)
@@ -144,6 +190,10 @@ internal sealed class SubtitleAppearanceDialog : Form
     {
         var originalFont = _sampleOriginal.Font; var translationFont = _sampleTranslation.Font;
         base.Dispose(disposing);
-        if (disposing) { originalFont.Dispose(); translationFont.Dispose(); _headingFont.Dispose(); _dialogFont.Dispose(); }
+        if (disposing)
+        {
+            originalFont.Dispose(); translationFont.Dispose();
+            foreach (var fonts in _localeFonts.Values) { fonts.Body.Dispose(); fonts.Heading.Dispose(); }
+        }
     }
 }

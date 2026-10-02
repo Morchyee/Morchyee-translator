@@ -7,6 +7,8 @@
     </PropertyGroup>
 
     <ItemGroup>
+      <EmbeddedResource Include="../KikitanTranslator.Photino/UserInterface/src/i18n/locales/*.json" LogicalName="Desktop.%(Filename).json" />
+      <EmbeddedResource Include="../KikitanTranslator.Photino/UserInterface/src/i18n/error-rules.json" LogicalName="Desktop.error-rules.json" />
       <EmbeddedResource Update="LanguageResources\languages.resx">
         <Generator>PublicResXFileCodeGenerator</Generator>
         <LastGenOutput>languages.Designer.cs</LastGenOutput>

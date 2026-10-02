@@ -1,13 +1,14 @@
 import {createTheme} from "@mui/material/styles";
+import {Locale, uiFont} from "../../i18n/localization";
 
 export const desktopFont = '"Segoe UI Variable", "Segoe UI", system-ui, sans-serif';
-export function desktopTheme(light: boolean) {
+export function desktopTheme(light: boolean, locale: Locale = "en") {
     return createTheme({
         palette: {mode: light ? "light" : "dark", primary: {main: light ? "#235fc4" : "#8ab4ff"},
             background: {default: light ? "#f7f8fa" : "#171b22", paper: light ? "#ffffff" : "#202630"},
             text: {primary: light ? "#202631" : "#f1f4f9", secondary: light ? "#586373" : "#aebacc"},
             divider: light ? "#dde2e9" : "#343e4d"},
-        typography: {fontFamily: desktopFont, fontSize: 13,
+        typography: {fontFamily: uiFont(locale), fontSize: 13,
             h1: {fontSize: 22, fontWeight: 600, lineHeight: 1.35},
             h2: {fontSize: 16, fontWeight: 600, lineHeight: 1.5},
             body1: {fontSize: 13, lineHeight: 1.6}, body2: {fontSize: 12, lineHeight: 1.6},

@@ -15,6 +15,50 @@ async Task Wait(Func<bool> condition)
     using var timeout = new CancellationTokenSource(3000);
     while (!condition()) await Task.Delay(10, timeout.Token);
 }
+Test("Desktop catalogs are complete and native English fallback works", () =>
+{
+    var assembly = typeof(KikitanTranslator.Resources.DesktopText).Assembly;
+    var baseline = JsonSerializer.Deserialize<Dictionary<string, string>>(assembly.GetManifestResourceStream("Desktop.en.json")!)!;
+    foreach (var locale in KikitanTranslator.Resources.DesktopText.Locales)
+    {
+        var catalog = JsonSerializer.Deserialize<Dictionary<string, string>>(assembly.GetManifestResourceStream($"Desktop.{locale}.json")!)!;
+        Check(catalog.Keys.Order().SequenceEqual(baseline.Keys.Order()));
+        Check(catalog.Values.All(value => !string.IsNullOrWhiteSpace(value)));
+        Check(KikitanTranslator.Resources.DesktopText.Get(locale, "common.start") == catalog["common.start"]);
+    }
+    Check(KikitanTranslator.Resources.DesktopText.Get("unsupported", "common.start") == "Start translation");
+    Check(KikitanTranslator.Resources.DesktopText.Resolve(null, "zh-Hans-CN") == "zh-CN");
+    Check(KikitanTranslator.Resources.DesktopText.Resolve(null, "ja-JP") == "ja-JP");
+    Check(KikitanTranslator.Resources.DesktopText.Resolve(null, "zh-TW") == "en");
+    Check(KikitanTranslator.Resources.DesktopText.Resolve("ja-JP", "zh-CN") == "ja-JP");
+    Check(KikitanTranslator.Resources.DesktopText.ErrorKey("Provider rate limit reached.") == "errors.rateLimit");
+    return Task.CompletedTask;
+});
+Test("Interface preference survives disk reload and culture changes without changing translation or credentials", () =>
+{
+    var oldCulture = System.Globalization.CultureInfo.CurrentUICulture;
+    var folder = Path.Combine(AppContext.BaseDirectory, "test-data", Guid.NewGuid().ToString("N")); Directory.CreateDirectory(folder);
+    var file = Path.Combine(folder, "config.json");
+    try
+    {
+        System.Globalization.CultureInfo.CurrentUICulture = new("zh-CN");
+        File.WriteAllText(file, "{\"source_language\":\"en\",\"target_language\":\"zh\",\"groq_api_key\":\"TEST_CREDENTIAL\"}");
+        AppConfig.Load(file);
+        Check(AppConfig.LoadError == null && AppConfig.ConfigObject.UiLanguage == "zh-CN");
+        AppConfig.ConfigObject.UiLanguage = "ja-JP";
+        Check(AppConfig.ConfigObject.SourceLanguage == "en" && AppConfig.ConfigObject.TargetLanguage == "zh");
+        System.Globalization.CultureInfo.CurrentUICulture = new("en-US");
+        AppConfig.Load(file);
+        Check(AppConfig.ConfigObject.UiLanguage == "ja-JP" && AppConfig.ConfigObject.GroqApiKey == "TEST_CREDENTIAL");
+        Check(AppConfig.ConfigObject.SourceLanguage == "en" && AppConfig.ConfigObject.TargetLanguage == "zh");
+        Check((string?)AppConfig.PublicConfig()["ui_language"] == "ja-JP");
+        var before = File.ReadAllText(file);
+        try { AppConfig.ConfigObject.UiLanguage = "invalid"; throw new Exception("Invalid locale accepted"); } catch (ArgumentException) { }
+        Check(File.ReadAllText(file) == before);
+    }
+    finally { System.Globalization.CultureInfo.CurrentUICulture = oldCulture; File.Delete(file); Directory.Delete(folder); }
+    return Task.CompletedTask;
+});
 Test("Subtitle translation updates existing ID and does not resurrect trimmed entries", () =>
 {
     var model = new SubtitleHistory(3);

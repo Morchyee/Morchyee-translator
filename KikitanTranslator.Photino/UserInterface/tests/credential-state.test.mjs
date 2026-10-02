@@ -53,5 +53,5 @@ test("Removing a stored key preserves a replacement draft", () => {
     state = reduce(state, saving("deepl_api_key", 1, "remove"));
     state = reduce(state, {type: "saved", field: "deepl_api_key", requestId: 1});
     assert.equal(state.deepl_api_key.value, "replacement-local-draft");
-    assert.equal(state.deepl_api_key.message, "Saved key removed.");
+    assert.equal(state.deepl_api_key.message, "credential.removed");
 });

@@ -18,7 +18,7 @@ public sealed class SubtitleWriter : IDisposable
             Log.Warning("[SUBTITLE] IPC queue full; subtitle delivery delayed or unavailable");
     }
     public void Command(string command) => Write(new("", "", false, Guid.Empty, Command: command));
-    public void Status(string state) => Write(new("", "", false, Guid.Empty, State: state));
+    public void Status(string state) => Write(new("", "", false, Guid.Empty, State: state, UiLanguage: KikitanTranslator.Utility.AppConfig.ConfigObject.UiLanguage));
     public void Error(string error) => Write(new("", "", false, Guid.Empty, Error: error));
     private async Task WriteAsync()
     {

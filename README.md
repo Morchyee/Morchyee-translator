@@ -13,6 +13,12 @@ Requires Windows 10/11 x64, an active playback device, an internet connection fo
 
 The alpha retains the existing Bing speech service. Its availability depends on the service and is not guaranteed. Groq Whisper is the alternative using an official API key. No new service-token bypass or scraping integration is introduced.
 
+## Interface languages
+
+Settings → **General** → **Interface language** supports **English**, **简体中文**, and **日本語**. The choice applies immediately to desktop settings, tray actions, subtitle waiting messages, and the native appearance dialog. It is independent of speech/translation languages: a Japanese interface can translate English audio into Chinese subtitles.
+
+Without a saved choice, the app follows the Windows UI language: Simplified Chinese environments use `zh-CN`, Japanese environments use `ja-JP`, and other environments use English. A manual choice is saved as `ui_language` and survives restarts and system-language changes. Existing credentials and subtitle preferences remain compatible. Product/provider names and technical diagnostics retain their original spelling.
+
 ## Translation providers and credentials
 
 - **Groq:** create a GroqCloud API key. Speech recognition also uses this key when Groq Whisper is selected. Translation uses the existing configured model in `Constants.GROQ_MODEL`.
