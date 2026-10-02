@@ -1,4 +1,4 @@
-﻿using System.Drawing;
+using System.Drawing;
 using KikitanTranslator.Base;
 using KikitanTranslator.Photino;
 using KikitanTranslator.Photino.Handlers;
@@ -22,6 +22,9 @@ public class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        using var instance = new Mutex(true, @"Local\DesktopTranslator.Main-" + Environment.UserDomainName + "-" + Environment.UserName, out var firstInstance);
+        if (!firstInstance) return;
+        var exit = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 #if DEBUG
         string appUrl = "http://localhost:1420";
 #else
@@ -30,23 +33,27 @@ public class Program
         PhotinoServer.CreateStaticFileServer(args, out string baseUrl).RunAsync();
         string appUrl = $"{baseUrl}/index.html";
 #endif
-        bool noUI = Array.Exists(args, e => e.Trim().Contains("--no-ui"));
+        bool noUI = args.Contains("--no-ui");
         
         Console.OutputEncoding = System.Text.Encoding.UTF8;
         Logger.Initialize();
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => Log.CloseAndFlush();
         AppConfig.Load();
+
+        if (OperatingSystem.IsWindows() && !noUI)
+            AppConfig.SetDesktopModeForSession(!args.Contains("--legacy-mode"));
 
         VelopackApp.Build().Run();
         
-        var connector = new Connector();
-        var manager = new Manager(noUI, connector);
+        using var connector = new Connector();
+        using var manager = new Manager(noUI, connector);
         var messageHandler = new MessageHandler();
 
         messageHandler.RegisterHandler("manual_translate", new ManualTranslate(manager));
         messageHandler.RegisterHandler("control", new Control(manager));
         messageHandler.RegisterHandler("update_config", new UpdateConfig(manager));
         messageHandler.RegisterHandler("send_app_state", new SendState(manager));
-        messageHandler.RegisterHandler("quit", new Quit());
+        messageHandler.RegisterHandler("quit", new Quit(() => { exit.TrySetResult(); connector.WindowHandle?.Close(); }));
         messageHandler.RegisterHandler("open_url", new OpenURL());
         messageHandler.RegisterHandler("update", new UpdateApp());
         messageHandler.RegisterHandler("fetch", new Fetch());
@@ -58,20 +65,21 @@ public class Program
             Log.Information("[APP] No UI requested, starting the websocket");
             connector.StartWebsocket();
 
-            var tcs = new TaskCompletionSource();
+
             
             Console.CancelKeyPress += (sender, e) =>
             {
                 e.Cancel = true; 
-                tcs.TrySetResult();
+                exit.TrySetResult();
             };
 
-            tcs.Task.GetAwaiter().GetResult();
+            exit.Task.GetAwaiter().GetResult();
+            return;
         }
 
         if (!noUI && OperatingSystem.IsWindows() && AppConfig.ConfigObject.DesktopTranslation)
         {
-            var exit = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
             Thread? settingsThread = null;
             using var trayControl = new DesktopControlServer(command =>
             {
@@ -79,10 +87,15 @@ public class Program
                 {
                     case "start": manager.Start(); break;
                     case "stop": manager.Stop(); break;
+                    case "show": manager.ShowSubtitles(); break;
                     case "settings":
                         if (settingsThread is not { IsAlive: true })
                         {
-                            settingsThread = new Thread(() => ShowSettingsWindow(appUrl, connector, messageHandler));
+                            settingsThread = new Thread(() =>
+                            {
+                                try { ShowSettingsWindow(appUrl, connector, messageHandler); }
+                                catch (Exception e) { Log.Error("[SETTINGS] Window failed: {ErrorType}", e.GetType().Name); }
+                            });
                             settingsThread.IsBackground = true;
                             settingsThread.SetApartmentState(ApartmentState.STA);
                             settingsThread.Start();
@@ -91,9 +104,18 @@ public class Program
                     case "exit": exit.TrySetResult(); break;
                 }
             });
-            manager.Start();
+            try { manager.StartSubtitleWindow(); }
+            catch (Exception e)
+            {
+                Log.Error("[STARTUP] Subtitle window unavailable: {ErrorType}. Opening settings for recovery.", e.GetType().Name);
+                ShowSettingsWindow(appUrl, connector, messageHandler);
+                return;
+            }
+            if (AppConfig.ConfigObject.AutoStart) manager.Start();
             exit.Task.GetAwaiter().GetResult();
             manager.Stop();
+            connector.WindowHandle?.Close();
+            settingsThread?.Join(1500);
             return;
         }
 
@@ -102,7 +124,7 @@ public class Program
 
     private static void ShowSettingsWindow(string appUrl, Connector connector, MessageHandler messageHandler)
     {
-        string windowTitle = "Kikitan Translator";
+        string windowTitle = AppConfig.ConfigObject.DesktopTranslation ? "Desktop Translator — Settings" : "Kikitan Translator (Legacy)";
 
         var iconFile = OperatingSystem.IsWindows() ? "kikitan_logo.ico" : "icon.png";
 
@@ -111,7 +133,7 @@ public class Program
             .SetUseOsDefaultSize(false)
             .SetMinSize(minWidth, minHeight)
 #if DEBUG
-            .SetIconFile($"Resources/wwwroot/{iconFile}")
+            .SetIconFile(Path.Combine(AppContext.BaseDirectory, "wwwroot", iconFile))
 #else
             .SetContextMenuEnabled(false)
             .SetIconFile(Path.Combine(AppContext.BaseDirectory, "wwwroot", iconFile))

@@ -1,4 +1,4 @@
-﻿using Velopack;
+using Velopack;
 using Velopack.Sources;
 
 namespace KikitanTranslator.Photino.Handlers;
@@ -7,6 +7,7 @@ public class UpdateApp : IHandler
 {
     public async Task<string?> OnDataReceived(string data)
     {
+        if (KikitanTranslator.Utility.AppConfig.ConfigObject.DesktopTranslation) return null;
         Task.Run(async () =>
         {
             var mgr = new UpdateManager(new GithubSource("https://github.com/YusufOzmen01/kikitan-translator", null,

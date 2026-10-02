@@ -1,11 +1,10 @@
-﻿namespace KikitanTranslator.Photino.Handlers;
+namespace KikitanTranslator.Photino.Handlers;
 
-public class Quit : IHandler
+public class Quit(Action requestExit) : IHandler
 {
-    public async Task<string?>  OnDataReceived(string data)
+    public Task<string?> OnDataReceived(string data)
     {
-        Environment.Exit(0);
-
-        return null;
+        requestExit();
+        return Task.FromResult<string?>(null);
     }
 }

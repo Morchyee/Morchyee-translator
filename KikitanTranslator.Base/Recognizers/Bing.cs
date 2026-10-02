@@ -1,4 +1,4 @@
-﻿using System.Buffers.Binary;
+using System.Buffers.Binary;
 using System.Globalization;
 using System.Net.WebSockets;
 using System.Security.Cryptography;
@@ -22,6 +22,8 @@ public class Bing : IRecognizer
     private readonly CancellationTokenSource _lifetime = new();
     private readonly List<Task> _callbackTasks = [];
     private volatile bool _disposed;
+    private volatile bool _stopping;
+    private readonly SemaphoreSlim _sessionGate = new(1, 1);
     
     private RecognizerStatus _status;
 
@@ -55,7 +57,8 @@ public class Bing : IRecognizer
     
     public void Start(string language, IErrorHandler errorHandler)
     {
-        if (_disposed) return;
+        if (_disposed || _client != null) return;
+        _connectionId = GenerateUUID();
         Log.Information($"[BING] Starting recognizer: capture={_capture.GetType().Name}, language={language}, status={_status}");
         ChangeRecognizerStatus(RecognizerStatus.Connecting);
         
@@ -69,13 +72,17 @@ public class Bing : IRecognizer
             return client;
         });
 
-        _client = new WebsocketClient(new Uri(url), factory);
+        _client = new WebsocketClient(new Uri(url), factory)
+        {
+            ErrorReconnectTimeout = TimeSpan.FromSeconds(5),
+            LostReconnectTimeout = TimeSpan.FromSeconds(2)
+        };
         
         _client.ReconnectionHappened.Subscribe(info => RunCallback(async () =>
         {
             if (_disposed) return;
             Log.Information($"[BING] Connection event: type={info.Type}, status={_status}, capture={_capture.GetType().Name}");
-            if (_status == RecognizerStatus.Running) return;
+            ChangeRecognizerStatus(RecognizerStatus.Connecting);
             
             Reset();
             Log.Information($"[BING] Connection setup started: connection={_connectionId}, request={_currentRequestId}");
@@ -145,7 +152,10 @@ public class Bing : IRecognizer
         _client.MessageReceived.Subscribe(message =>
         {
             if (_disposed) return;
-            var (path, json) = ParseWebsocketMessage(message.Text!);
+            if (message.Text == null || _stopping) return;
+            try
+            {
+            var (path, json) = ParseWebsocketMessage(message.Text);
             switch (path)
             {
                 case "turn.start":
@@ -166,7 +176,7 @@ public class Bing : IRecognizer
                         if (data?.Text != null)
                         {
                             var text = data.Text;
-                            RunCallback(() => { if (!_disposed) OnRecognitionReceived?.Invoke(text, false); return Task.CompletedTask; });
+                            OnRecognitionReceived?.Invoke(text, false);
                         }
                     }
                     
@@ -177,33 +187,31 @@ public class Bing : IRecognizer
                         if (data?.DisplayText != null)
                         {
                             var text = data.DisplayText;
-                            RunCallback(() => { if (!_disposed) OnRecognitionReceived?.Invoke(text, true); return Task.CompletedTask; });
+                            OnRecognitionReceived?.Invoke(text, true);
                         }
                     }
                     
                     break;
             }
+            }
+            catch (Exception e) { Log.Warning("[BING] Invalid service message: {ErrorType}", e.GetType().Name); }
         });
-        _client.DisconnectionHappened.Subscribe(info => RunCallback(async () =>
+        _client.DisconnectionHappened.Subscribe(info =>
         {
-            if (_disposed) return;
-            Log.Error($"[BING] Websocket connection has closed. Reason: {info.Type}");
-            ChangeRecognizerStatus(RecognizerStatus.NotStarted);
-
-            if (info.Type != DisconnectionType.ByServer) return;
-            Log.Information($"[BING] Server disconnect; restart scheduled in 1000ms: connection={_connectionId}, capture={_capture.GetType().Name}");
-            try { await Task.Delay(1000, _lifetime.Token); }
-            catch (OperationCanceledException) { return; }
-            
-            if (_disposed) return;
-            Start(_language, errorHandler);
-        }));
+            if (_disposed || _stopping) { info.CancelReconnection = true; return; }
+            _capture.Pause();
+            ChangeRecognizerStatus(RecognizerStatus.Connecting);
+            Log.Warning("[BING] Connection interrupted: {Reason}. Reconnecting automatically.", info.Type);
+        });
 
         _client.Start();
     }   
 
     public void Stop()
     {
+        _stopping = true;
+        if (_client != null) _client.IsReconnectionEnabled = false;
+        _lifetime.Cancel();
         _capture.Stop();
         _client?.Stop(WebSocketCloseStatus.NormalClosure, "User request");
         ChangeRecognizerStatus(RecognizerStatus.NotStarted);
@@ -215,7 +223,7 @@ public class Bing : IRecognizer
 
     private void OnAudioData(float[] samples, bool speech)
     {
-        if (_disposed) return;
+        if (_disposed || _stopping || _client == null || !_client.IsRunning) return;
         var byteArray = new byte[samples.Length * 2]; 
 
         for (int i = 0; i < samples.Length; i++)
@@ -240,7 +248,7 @@ public class Bing : IRecognizer
         {
             await RestartTurnCore();
         }
-        catch (OperationCanceledException) when (_disposed)
+        catch (OperationCanceledException) when (_disposed || _stopping)
         {
         }
         catch (Exception e)
@@ -259,9 +267,11 @@ public class Bing : IRecognizer
             {
                 try
                 {
-                    await callback();
+                    await _sessionGate.WaitAsync(_lifetime.Token);
+                    try { if (!_disposed && !_stopping) await callback(); }
+                    finally { _sessionGate.Release(); }
                 }
-                catch (OperationCanceledException) when (_disposed)
+                catch (OperationCanceledException) when (_disposed || _stopping)
                 {
                 }
                 catch (Exception e)
@@ -277,6 +287,7 @@ public class Bing : IRecognizer
         if (_disposed) return;
         if (!_client.IsRunning) return;
 
+        _capture.Pause();
         _currentRequestId = GenerateUUID();
         _streamIdCounter++;
 
@@ -284,9 +295,7 @@ public class Bing : IRecognizer
         {
             Log.Verbose("[BING] Stream ID counter limit has been reached. Restarting Bing recognizer...");
             
-            Stop();
-            if (_disposed) return;
-            Start(_language, null);
+            await _client.Reconnect();
 
             return;
         }
@@ -294,7 +303,7 @@ public class Bing : IRecognizer
         _capture.Pause();
 
         var bps = _capture.GetSampleRate() * 2;
-        var secondsSent = _bytesSend / bps;
+        var secondsSent = (decimal)_bytesSend / bps;
         var offset100ns = Math.Floor((decimal)(secondsSent * 10_000_000));
 
         var contextPayload = new
@@ -456,5 +465,7 @@ public class Bing : IRecognizer
         Stop();
         _client?.Dispose();
         Task.WhenAll(callbacks).GetAwaiter().GetResult();
+        _sessionGate.Dispose();
+        _lifetime.Dispose();
     }
 }

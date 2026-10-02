@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using KikitanTranslator.Utility;
 
 namespace KikitanTranslator.Photino.Handlers;
@@ -19,9 +19,9 @@ public class OpenURL : IHandler
             return null;
         }
         
-        if (!data.StartsWith("https://") || !(data.Contains("buymeacoffee.com") || data.Contains("booth.pm") ||
-                                               data.Contains("github.com") || data.Contains("twitter.com") ||
-                                               data.Contains("discord.gg"))) return null;
+        if (!Uri.TryCreate(data, UriKind.Absolute, out var uri) || uri.Scheme != "https" ||
+            !new[] { "buymeacoffee.com", "booth.pm", "github.com", "twitter.com", "discord.gg" }.Any(
+                host => uri.Host == host || uri.Host.EndsWith("." + host, StringComparison.OrdinalIgnoreCase))) return null;
 
         Process.Start(new ProcessStartInfo
         {

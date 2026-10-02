@@ -48,17 +48,23 @@ public class RecognitionData
     [JsonProperty("final")] public bool Final;
 }
 
-public class Manager
+public class Manager : IDisposable
 {
     private Kikitan? _microphoneKikitan;
     private Kikitan? _desktopKikitan;
 
     private SystemLoopback _loopback;
-    private Microphone _mic;
+    private Microphone? _mic;
+    private readonly string _modelPath;
     private AppState _appState = new () { Microphones = [] };
     private IErrorHandler _errorHandler;
     private bool _running;
     private readonly object _lifecycleLock = new();
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly Task _deviceMonitor;
+    private bool _disposed;
+    private string? _playbackDeviceId;
+    private readonly OnConfigUpdate _configUpdated;
 
     private readonly SubtitleWriter _subtitleWriter = new();
     private Process? _subtitleProcess;
@@ -67,103 +73,97 @@ public class Manager
 
     private Connector _connector;
 
-    public DeviceInfo[] GetMicrophones() => _mic.GetCaptureDevices();
+    public DeviceInfo[] GetMicrophones() => GetMicrophone().GetCaptureDevices();
+    private Microphone GetMicrophone() => _mic ??= new Microphone(_modelPath, _errorHandler);
 
     public Manager(bool noUI, Connector connector)
     {
         _noUI = noUI;
         _appState.Config = AppConfig.ConfigObject;
 
-        _errorHandler = new ErrorHandler(connector);
+        _errorHandler = new ErrorHandler(connector, error => _subtitleWriter.Error(error));
         
         #if DEBUG
-        _loopback = new("Resources/wwwroot/silero_vad.onnx");
-        _mic = new("Resources/wwwroot/silero_vad.onnx", _errorHandler);
+        _loopback = new(Path.Combine(AppContext.BaseDirectory, "wwwroot", "silero_vad.onnx"));
+        _modelPath = Path.Combine(AppContext.BaseDirectory, "wwwroot", "silero_vad.onnx");
         #else
         _appState.AppVersion = Assembly.GetEntryAssembly()?.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split("+")[0];
         _loopback = new(Path.Combine(AppContext.BaseDirectory, "wwwroot", "silero_vad.onnx"));
-        _mic = new(Path.Combine(AppContext.BaseDirectory, "wwwroot", "silero_vad.onnx"), _errorHandler);
+        _modelPath = Path.Combine(AppContext.BaseDirectory, "wwwroot", "silero_vad.onnx");
         #endif
         
         _appState.IsLinux = !RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
         _appState.IsAppimage = _appState.IsLinux && Environment.GetEnvironmentVariable("KIKITAN_NOT_APPIMAGE") == null;
         _connector = connector;
 
-        Task.Run(async () =>
-        {
-            var mgr = new UpdateManager(new GithubSource("https://github.com/YusufOzmen01/kikitan-translator", null, true));
-
-            var newVersion = await mgr.CheckForUpdatesAsync();
-            _appState.ServerVersion = newVersion?.TargetFullRelease.Version.ToString();
-            
-            SendUpdateToUI();
-        });
-        
-        AppConfig.OnUpdate += () =>
+        _configUpdated = () =>
         {
             _appState.Config = AppConfig.ConfigObject;
-
             SendUpdateToUI();
         };
+        AppConfig.OnUpdate += _configUpdated;
+        _deviceMonitor = Task.Run(MonitorDevicesAsync);
+    }
 
-        Task.Run(async () =>
+    private async Task MonitorDevicesAsync()
+    {
+        MiniAudioEngine? engine = null;
+        try
         {
-            MiniAudioEngine? engine = null;
-
-            List<Mic> mics = new();
-
-            while (true)
+            while (!_lifetime.IsCancellationRequested)
             {
-                if (AppConfig.ConfigObject.DesktopTranslation && !_appState.IsLinux)
+                await Task.Delay(2000, _lifetime.Token);
+                try
                 {
-                    await Task.Delay(500);
-                    continue;
+                    if (AppConfig.ConfigObject.DesktopTranslation && OperatingSystem.IsWindows())
+                    {
+                        lock (_lifecycleLock)
+                        {
+                            if (_disposed) return;
+                            if (!_noUI && (_subtitleProcess == null || _subtitleProcess.HasExited)) StartSubtitleWindow();
+                            if (_running)
+                            {
+                                using var devices = new NAudio.CoreAudioApi.MMDeviceEnumerator();
+                                using var device = devices.GetDefaultAudioEndpoint(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia);
+                                if (_playbackDeviceId != device.ID || (_appState.Status == 2 && !_loopback.IsRunning))
+                                {
+                                    Log.Information("[AUDIO] Playback device changed or capture stopped; restarting capture pipeline");
+                                    RestartCore();
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    engine ??= new MiniAudioEngine(backendPriority: [MiniAudioBackend.Wasapi, MiniAudioBackend.Oss]);
+                    engine.UpdateAudioDevicesInfo();
+                    var mics = engine.CaptureDevices.Select(d => new Mic { Name = d.Name, Default = d.IsDefault }).ToArray();
+                    if (!_appState.Microphones.Select(m => m.Name).SequenceEqual(mics.Select(m => m.Name)))
+                    {
+                        _appState.Microphones = mics;
+                        SendUpdateToUI();
+                    }
+                    if (_appState.Config.Microphone.Length > 0 && mics.Length > 0 && !mics.Any(m => m.Name == _appState.Config.Microphone))
+                    {
+                        AppConfig.ConfigObject.Microphone = (mics.FirstOrDefault(m => m.Default) ?? mics[0]).Name;
+                        SendMicChanged();
+                        RestartIfRunning();
+                    }
                 }
-
-                engine ??= new MiniAudioEngine(backendPriority: [MiniAudioBackend.Wasapi, MiniAudioBackend.Oss]);
-                engine.UpdateAudioDevicesInfo();
-                foreach (var mic in engine.CaptureDevices)
-                {
-                    mics.Add(new Mic { Name = mic.Name, Default = mic.IsDefault });
-                }
-                
-                if (_appState.Microphones.Length != 0 && mics.Count != _appState.Microphones.Length)
-                {
-                    _appState.Microphones = mics.ToArray();
-                    
-                    SendUpdateToUI();
-                }
-
-                if (_appState.Config.Microphone.Length != 0 && !mics.Exists(m => m.Name == _appState.Config.Microphone))
-                {
-                    var device = engine.CaptureDevices.FirstOrDefault(d => d.IsDefault);
-                    if (device == null) device = engine.CaptureDevices[0];
-                    
-                    Log.Warning($"[MIC]  The selected mic ({AppConfig.ConfigObject.Microphone}) is not available. Switching to the system default ({device.Name})");
-                    
-                    AppConfig.ConfigObject.Microphone = device.Name;
-                    
-                    SendMicChanged();
-                    RestartIfRunning();
-                }
-                
-                
-                _appState.Microphones = mics.ToArray();
-                
-                mics.Clear();
-
-                await Task.Delay(500);
+                catch (Exception e) { Log.Warning("[AUDIO] Device recovery failed: {ErrorType}. Retry available from tray.", e.GetType().Name); }
             }
-        });
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        finally { engine?.Dispose(); }
     }
 
     public void Start()
     {
         lock (_lifecycleLock)
         {
+            if (_disposed) return;
             if (_running)
             {
-                RestartCore();
+                if (_appState.Status == 0) RestartCore(); // Recover a pipeline whose recognizer failed after startup.
                 return;
             }
 
@@ -174,32 +174,8 @@ public class Manager
     private void StartCore()
     {
         Log.Information($"[APP] Start requested: running={_running}, recognizer={AppConfig.ConfigObject.Recognizer}, translator={AppConfig.ConfigObject.Translator}, desktop={AppConfig.ConfigObject.DesktopTranslation}, chatbox={AppConfig.ConfigObject.SendToChatbox}");
+        if (AppConfig.LoadError != null) { _errorHandler.OnError(AppConfig.LoadError); return; }
         var desktopMode = AppConfig.ConfigObject.DesktopTranslation && !_appState.IsLinux;
-
-        if (AppConfig.ConfigObject.Translator == 1 && !desktopMode)
-        {
-            if (string.IsNullOrEmpty(AppConfig.ConfigObject.GroqApiKey))
-            {
-                Log.Error("[GROQ] No API key is configured!");
-                _errorHandler.OnError("GROQ_NO_API_KEY");
-
-                return;
-            }
-        
-            using var client = new HttpClient();
-            client.DefaultRequestHeaders.Add("Authorization", $"Bearer {AppConfig.ConfigObject.GroqApiKey}");
-            using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.groq.com/openai/v1/audio/transcriptions");
-
-            using var response = client.Send(request);
-            if (response.StatusCode == HttpStatusCode.Unauthorized)
-            {
-                Log.Error("[GROQ] Invalid Groq API key!");
-                _errorHandler.OnError("GROQ_INVALID_API_KEY");
-
-                return;
-            }
-            
-        }
 
         if (desktopMode)
         {
@@ -209,10 +185,10 @@ public class Manager
             }
             catch (Exception e)
             {
-                Log.Error(e, "[APP] Desktop pipeline failed to start");
+                Log.Error("[APP] Desktop pipeline failed to start: {ErrorType}", e.GetType().Name);
                 _desktopKikitan?.Dispose();
                 _desktopKikitan = null;
-                _errorHandler.OnError($"Desktop pipeline failed to start: {e.Message}");
+                _errorHandler.OnError(e is InvalidOperationException ? e.Message : "Desktop pipeline could not start. Check the playback device, speech credentials and network.");
             }
 
             _running = _desktopKikitan != null;
@@ -230,11 +206,11 @@ public class Manager
         _oscWatcher.Start();
 
         IRecognizer rMic;
-        if (AppConfig.ConfigObject.Recognizer == 0) rMic = new Bing(_mic);
-        else if (AppConfig.ConfigObject.Recognizer == 1) rMic = new GroqRecognizer(_mic);
-        else rMic = new Gemini(_mic);
+        if (AppConfig.ConfigObject.Recognizer == 0) rMic = new Bing(GetMicrophone());
+        else if (AppConfig.ConfigObject.Recognizer == 1) rMic = new GroqRecognizer(GetMicrophone());
+        else rMic = new Gemini(GetMicrophone());
 
-        _microphoneKikitan = new Kikitan(rMic, CreateTranslator(), new ErrorHandler(_connector), false);
+        _microphoneKikitan = new Kikitan(rMic, CreateTranslator(), _errorHandler, false);
         _microphoneKikitan.AddOutput(new Custom(SendRecognitionData, false));
         if (AppConfig.ConfigObject.SendToChatbox)
         {
@@ -291,6 +267,12 @@ public class Manager
 
     private void StartDesktopCore()
     {
+        if (!Languages.SourceLanguages.ContainsKey(AppConfig.ConfigObject.SourceLanguage) ||
+            !Languages.TargetLanguages.ContainsKey(AppConfig.ConfigObject.TargetLanguage))
+            throw new InvalidOperationException("Select supported source and target languages in Settings.");
+        using (var devices = new NAudio.CoreAudioApi.MMDeviceEnumerator())
+        using (var device = devices.GetDefaultAudioEndpoint(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia))
+            _playbackDeviceId = device.ID;
         var provider = AppConfig.ConfigObject.DesktopTranslationProvider;
         var key = provider switch
         {
@@ -309,7 +291,7 @@ public class Manager
         else if (AppConfig.ConfigObject.Recognizer == 1) rDesktop = new GroqRecognizer(_loopback);
         else rDesktop = new Gemini(_loopback);
 
-        _desktopKikitan = new Kikitan(rDesktop, CreateDesktopTranslator(provider), new ErrorHandler(_connector), true);
+        _desktopKikitan = new Kikitan(rDesktop, CreateDesktopTranslator(provider), _errorHandler, true);
         Log.Information($"[APP] Desktop pipeline starting: recognizer={rDesktop.GetType().Name}, subtitleWindow={_subtitleProcess != null}");
         _desktopKikitan.OnRecognizerStatusChanged += s =>
         {
@@ -318,11 +300,11 @@ public class Manager
         };
         if (!_noUI)
         {
-            _desktopKikitan.AddOutput(new Custom((recognized, translated, final) =>
+            _desktopKikitan.OnSubtitle += (id, recognized, translated, final, update) =>
             {
                 if (string.IsNullOrWhiteSpace(recognized)) return;
-                _subtitleWriter.Write(new DesktopSubtitleResult(recognized, translated, final));
-            }, false));
+                _subtitleWriter.Write(new DesktopSubtitleResult(recognized, translated, final, id, update));
+            };
         }
 
         _desktopKikitan.Start();
@@ -333,20 +315,18 @@ public class Manager
         }
     }
 
-    private void StartSubtitleWindow()
+    public void StartSubtitleWindow()
     {
-        if (_subtitleProcess is { HasExited: false }) return;
-
-        var path = Path.Combine(AppContext.BaseDirectory, "KikitanTranslator.Subtitles.exe");
-        if (!File.Exists(path))
+        lock (_lifecycleLock)
         {
-            Log.Warning("[SUBTITLE] Subtitle window executable not found: {Path}", path);
-            return;
+            if (_disposed || _subtitleProcess is { HasExited: false }) return;
+            var path = Path.Combine(AppContext.BaseDirectory, "KikitanTranslator.Subtitles.exe");
+            if (!File.Exists(path)) throw new InvalidOperationException("Subtitle executable is missing. Extract the complete release folder.");
+            var startInfo = new ProcessStartInfo(path) { UseShellExecute = false };
+            startInfo.ArgumentList.Add(Environment.ProcessId.ToString());
+            _subtitleProcess?.Dispose();
+            _subtitleProcess = Process.Start(startInfo);
         }
-
-        var startInfo = new ProcessStartInfo(path) { UseShellExecute = false };
-        startInfo.ArgumentList.Add(Environment.ProcessId.ToString());
-        _subtitleProcess = Process.Start(startInfo);
     }
 
     public void Stop()
@@ -358,7 +338,7 @@ public class Manager
     {
         lock (_lifecycleLock)
         {
-            if (_running) RestartCore();
+            if (!_disposed && _running) RestartCore();
         }
     }
 
@@ -378,22 +358,19 @@ public class Manager
         var microphone = _microphoneKikitan;
         _desktopKikitan = null;
         _microphoneKikitan = null;
-        try
+        foreach (var component in new IDisposable?[] { microphone, desktop, _oscWatcher })
         {
-            microphone?.Dispose();
+            try { component?.Dispose(); }
+            catch (Exception e) { Log.Warning("[APP] Cleanup failed: {ErrorType}", e.GetType().Name); }
         }
-        finally
-        {
-            desktop?.Dispose();
-            _oscWatcher?.Dispose();
-            _oscWatcher = null;
-        }
+        _oscWatcher = null;
+        _appState.Status = 0;
         SendUpdateToUI();
     }
 
     private static ITranslator CreateTranslator() => AppConfig.ConfigObject.Translator switch
     {
-        0 => new GoogleTranslate(),
+        0 => new GoogleCloudTranslator(),
         1 => new GroqTranslator(),
         _ => new GeminiStub()
     };
@@ -410,12 +387,39 @@ public class Manager
 
     public void SendUpdateToUI()
     {
-        _connector.Send(
-            JsonConvert.SerializeObject(new Message
-            {
-                Method = "state",
-                Data = JsonConvert.SerializeObject(_appState)
-            }));
+        _subtitleWriter.Status(_appState.Status switch { 2 => "Listening", 1 => "Connecting", _ => "Stopped" });
+        var state = Newtonsoft.Json.Linq.JObject.FromObject(_appState);
+        state["config"] = AppConfig.PublicConfig();
+        state["configuration_error"] = AppConfig.LoadError;
+        _connector.Send(JsonConvert.SerializeObject(new Message { Method = "state", Data = state.ToString(Formatting.None) }));
+    }
+
+    public void ShowSubtitles()
+    {
+        lock (_lifecycleLock) { if (!_disposed) StartSubtitleWindow(); }
+        _subtitleWriter.Command("show");
+    }
+    public void Dispose()
+    {
+        lock (_lifecycleLock)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _lifetime.Cancel();
+            AppConfig.OnUpdate -= _configUpdated;
+            StopCore();
+        }
+        _deviceMonitor.GetAwaiter().GetResult();
+        _loopback.Stop(); _mic?.Dispose();
+        _subtitleWriter.Command("close");
+        if (_subtitleProcess != null)
+        {
+            try { if (!_subtitleProcess.HasExited && !_subtitleProcess.WaitForExit(1500)) _subtitleProcess.Kill(); }
+            catch (InvalidOperationException) { }
+            _subtitleProcess.Dispose();
+        }
+        _subtitleWriter.Dispose();
+        _lifetime.Dispose();
     }
 
     private void SendRecognitionData(string recognized, string translated, bool final)

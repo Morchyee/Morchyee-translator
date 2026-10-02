@@ -7,29 +7,53 @@ namespace KikitanTranslator.Subtitles;
 
 public sealed class SubtitleWindow : Form
 {
-    private const int MaxEntries = 5;
-    private readonly FlowLayoutPanel _history = new();
+    private readonly SubtitlePreferences _preferences;
+    private readonly bool _selfTest;
+    public int TestExitCode { get; private set; }
+    private readonly Dictionary<Guid, SubtitleBlock> _blocks = new();
+    private readonly SubtitleHistory _model;
+    private readonly System.Windows.Forms.Timer _saveTimer = new() { Interval = 700 };
+    private readonly FlowLayoutPanel _history = new BufferedHistory();
     private readonly CancellationTokenSource _readerCancellation = new();
     private readonly NotifyIcon _tray;
     private readonly int? _parentId;
-    private SubtitleBlock? _current;
-    private bool _allowClose;
 
-    public SubtitleWindow(int? parentId)
+    private bool _allowClose;
+    private bool _readerStarted;
+    private ToolStripItem? _startItem;
+    private ToolStripItem? _stopItem;
+
+    public SubtitleWindow(int? parentId, bool selfTest = false)
     {
+        _selfTest = selfTest;
+        _preferences = selfTest ? new SubtitlePreferences() : SubtitlePreferences.Load();
         _parentId = parentId;
-        Text = "Desktop Subtitles";
-        TopMost = true;
+        _model = new SubtitleHistory(_preferences.HistoryCount);
+        AutoScaleMode = AutoScaleMode.Dpi;
+        DoubleBuffered = true;
+        Text = "Desktop Translator — Subtitles";
+        TopMost = _preferences.AlwaysOnTop;
         FormBorderStyle = FormBorderStyle.SizableToolWindow;
         StartPosition = FormStartPosition.Manual;
         MinimumSize = new Size(450, 190);
         Size = new Size(740, 320);
         BackColor = Color.FromArgb(24, 27, 33);
-        Opacity = 0.93;
+        Opacity = _preferences.Opacity;
 
         var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 720);
         Location = new Point(area.Left + (area.Width - Width) / 2, area.Bottom - Height - 40);
 
+        if (_preferences.X != int.MinValue)
+        {
+            var saved = new Rectangle(_preferences.X, _preferences.Y, Math.Clamp(_preferences.Width, 450, 3000), Math.Clamp(_preferences.Height, 190, 1800));
+            var screen = Screen.FromRectangle(saved).WorkingArea;
+            Size = new Size(Math.Min(saved.Width, screen.Width), Math.Min(saved.Height, screen.Height));
+            Location = new Point(Math.Clamp(saved.X, screen.Left, Math.Max(screen.Left, screen.Right - Width)),
+                Math.Clamp(saved.Y, screen.Top, Math.Max(screen.Top, screen.Bottom - Height)));
+        }
+        _saveTimer.Tick += (_, _) => { _saveTimer.Stop(); SavePreferences(); };
+        Move += (_, _) => ScheduleSave();
+        ResizeEnd += (_, _) => ScheduleSave();
         _history.Dock = DockStyle.Fill;
         _history.AutoScroll = true;
         _history.FlowDirection = FlowDirection.TopDown;
@@ -40,14 +64,15 @@ public sealed class SubtitleWindow : Form
         _history.Resize += (_, _) => ResizeBlocks();
 
         var menu = new ContextMenuStrip();
-        menu.Items.Add("Start translation", null, (_, _) => _ = SendCommandAsync("start"));
-        menu.Items.Add("Stop translation", null, (_, _) => _ = SendCommandAsync("stop"));
+        _startItem = menu.Items.Add("Start translation", null, (_, _) => _ = SendCommandAsync("start"));
+        _stopItem = menu.Items.Add("Stop translation", null, (_, _) => _ = SendCommandAsync("stop"));
         menu.Items.Add("Open settings", null, (_, _) => _ = SendCommandAsync("settings"));
         var showHide = menu.Items.Add("Hide subtitles", null, (_, _) =>
         {
             if (Visible) Hide(); else Show();
         });
         VisibleChanged += (_, _) => showHide.Text = Visible ? "Hide subtitles" : "Show subtitles";
+        menu.Items.Add("Subtitle appearance…", null, (_, _) => EditPreferences());
         menu.Items.Add("Exit", null, async (_, _) =>
         {
             await SendCommandAsync("exit");
@@ -57,9 +82,9 @@ public sealed class SubtitleWindow : Form
         _tray = new NotifyIcon
         {
             Icon = SystemIcons.Application,
-            Text = "Desktop Subtitles",
+            Text = "Desktop Translator — Subtitles",
             ContextMenuStrip = menu,
-            Visible = true
+            Visible = !selfTest
         };
         _tray.DoubleClick += (_, _) => { Show(); Activate(); };
 
@@ -82,7 +107,22 @@ public sealed class SubtitleWindow : Form
             FormClosed += (_, _) => parentTimer.Dispose();
         }
 
-        Shown += (_, _) => _ = Task.Run(() => ReadSubtitlesAsync(_readerCancellation.Token));
+        Shown += (_, _) =>
+        {
+            if (_selfTest)
+            {
+                BeginInvoke((Action)(() =>
+                {
+                    try { VerifyPresentation(); Console.WriteLine("PASS subtitle window rendering, update, history and scroll checks"); }
+                    catch (Exception e) { TestExitCode = 1; Console.Error.WriteLine("FAIL subtitle window: " + e.Message); }
+                    _allowClose = true; Close();
+                }));
+                return;
+            }
+            if (_readerStarted) return;
+            _readerStarted = true;
+            _ = Task.Run(() => ReadSubtitlesAsync(_readerCancellation.Token));
+        };
         FormClosing += (_, e) =>
         {
             if (!_allowClose && e.CloseReason == CloseReason.UserClosing)
@@ -93,6 +133,9 @@ public sealed class SubtitleWindow : Form
         };
         FormClosed += (_, _) =>
         {
+            _saveTimer.Stop();
+            SavePreferences();
+            _saveTimer.Dispose();
             _readerCancellation.Cancel();
             _tray.Visible = false;
             _tray.Dispose();
@@ -112,7 +155,7 @@ public sealed class SubtitleWindow : Form
         try
         {
             await using var pipe = new NamedPipeClientStream(".",
-                $"kikitan-desktop-control-{_parentId.Value}", PipeDirection.Out, PipeOptions.Asynchronous);
+                $"kikitan-desktop-control-{_parentId.Value}", PipeDirection.Out, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
             await pipe.ConnectAsync(1000);
             await using var writer = new StreamWriter(pipe, Encoding.UTF8) { AutoFlush = true };
             await writer.WriteLineAsync(command);
@@ -129,8 +172,8 @@ public sealed class SubtitleWindow : Form
         {
             try
             {
-                await using var pipe = new NamedPipeServerStream("kikitan-desktop-subtitles",
-                    PipeDirection.In, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+                await using var pipe = new NamedPipeServerStream($"kikitan-desktop-subtitles-{_parentId ?? 0}",
+                    PipeDirection.In, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
                 await pipe.WaitForConnectionAsync(cancellationToken);
                 using var reader = new StreamReader(pipe, Encoding.UTF8);
                 var line = await reader.ReadLineAsync(cancellationToken);
@@ -148,6 +191,7 @@ public sealed class SubtitleWindow : Form
             {
                 // A disconnected writer does not stop the subtitle window.
             }
+            catch (InvalidOperationException) when (IsDisposed || Disposing) { break; }
             catch (JsonException)
             {
                 // Ignore a malformed message and accept the next one.
@@ -157,35 +201,145 @@ public sealed class SubtitleWindow : Form
 
     private void ShowSubtitle(DesktopSubtitleResult result)
     {
-        if (string.IsNullOrWhiteSpace(result.OriginalText)) return;
-
-        if (_current == null)
+        if (result.Command == "show") { Show(); Activate(); return; }
+        if (result.Command == "hide") { Hide(); return; }
+        if (result.Command == "close") { CloseForParent(); return; }
+        if (result.State != null)
         {
-            var wasAtBottom = IsAtBottom();
-            _history.SuspendLayout();
-            _current = new SubtitleBlock(result, BlockWidth());
-            _history.Controls.Add(_current);
-            while (_history.Controls.Count > MaxEntries)
-            {
-                var oldest = _history.Controls[0];
-                _history.Controls.RemoveAt(0);
-                oldest.Dispose();
-            }
-            _history.ResumeLayout(true);
-            if (wasAtBottom) _history.ScrollControlIntoView(_current);
+            _tray.Text = "Desktop Translator — " + result.State;
+            if (_startItem != null) _startItem.Enabled = result.State == "Stopped";
+            if (_stopItem != null) _stopItem.Enabled = result.State != "Stopped";
+            return;
         }
+        if (result.Error != null)
+        {
+            _tray.ShowBalloonTip(5000, "Desktop Translator", result.Error, ToolTipIcon.Warning);
+            return;
+        }
+        if (!_model.Apply(result)) return;
+        var follow = IsAtBottom();
+        var scrollY = _history.VerticalScroll.Value;
+        var removedHeight = 0;
+        _history.SuspendLayout();
+        if (_blocks.TryGetValue(result.Id, out var existing)) existing.UpdateText(result, BlockWidth());
         else
         {
-            // Partials and the final translation belong to the same block.
-            // Updating a block never moves the viewport.
-            var scrollY = _history.VerticalScroll.Value;
-            _history.SuspendLayout();
-            _current.UpdateText(result, BlockWidth());
-            _history.ResumeLayout(true);
-            _history.AutoScrollPosition = new Point(0, scrollY);
+            var block = new SubtitleBlock(result, BlockWidth(), _preferences);
+            _blocks.Add(result.Id, block);
+            _history.Controls.Add(block);
         }
+        foreach (var id in _blocks.Keys.Where(id => !_model.Entries.Any(e => e.Id == id)).ToArray())
+        {
+            var old = _blocks[id];
+            removedHeight += old.Height + old.Margin.Vertical;
+            _history.Controls.Remove(old);
+            _blocks.Remove(id);
+            old.Dispose();
+        }
+        _history.ResumeLayout(true);
+        _history.AutoScrollPosition = new Point(0, follow
+            ? Math.Max(0, _history.VerticalScroll.Maximum - _history.VerticalScroll.LargeChange + 1)
+            : Math.Max(0, scrollY - removedHeight));
+    }
 
-        if (result.IsFinal) _current = null;
+    private void ScheduleSave()
+    {
+        if (!IsHandleCreated || WindowState != FormWindowState.Normal) return;
+        _saveTimer.Stop();
+        _saveTimer.Start();
+    }
+    private void SavePreferences()
+    {
+        if (_selfTest) return;
+        if (WindowState == FormWindowState.Normal)
+        {
+            _preferences.X = Left; _preferences.Y = Top;
+            _preferences.Width = Width; _preferences.Height = Height;
+        }
+        _preferences.Save();
+    }
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var parameters = base.CreateParams;
+            if (_preferences?.ClickThrough == true) parameters.ExStyle |= 0x00000020 | 0x00080000;
+            return parameters;
+        }
+    }
+    protected override void WndProc(ref Message m)
+    {
+        const int WmSysCommand = 0x0112;
+        var command = m.WParam.ToInt64() & 0xfff0;
+        if (_preferences?.LockPosition == true && m.Msg == WmSysCommand && (command == 0xf000 || command == 0xf010)) return;
+        base.WndProc(ref m);
+    }
+    private void EditPreferences()
+    {
+        using var dialog = new Form { Text = "Subtitle appearance", Size = new Size(380, 430),
+            StartPosition = FormStartPosition.CenterScreen, FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false, MinimizeBox = false, AutoScaleMode = AutoScaleMode.Dpi, TopMost = true };
+        var layout = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown,
+            WrapContents = false, Padding = new Padding(18) };
+        dialog.Controls.Add(layout);
+        NumericUpDown Number(string label, decimal value, decimal min, decimal max)
+        {
+            layout.Controls.Add(new Label { Text = label, AutoSize = true });
+            var number = new NumericUpDown { Minimum = min, Maximum = max, Value = value, Width = 300 };
+            layout.Controls.Add(number); return number;
+        }
+        CheckBox Toggle(string label, bool value)
+        {
+            var toggle = new CheckBox { Text = label, Checked = value, AutoSize = true };
+            layout.Controls.Add(toggle); return toggle;
+        }
+        var font = Number("Font size", _preferences.FontSize, 10, 36);
+        var history = Number("History entries (3–50)", _preferences.HistoryCount, 3, 50);
+        var opacity = Number("Window opacity (%)", (decimal)(_preferences.Opacity * 100), 25, 100);
+        var top = Toggle("Always on top", _preferences.AlwaysOnTop);
+        var original = Toggle("Show original", _preferences.ShowOriginal);
+        var translation = Toggle("Show translation", _preferences.ShowTranslation);
+        var locked = Toggle("Lock position and size", _preferences.LockPosition);
+        var click = Toggle("Click through (use tray to change)", _preferences.ClickThrough);
+        var save = new Button { Text = "Save", DialogResult = DialogResult.OK, Width = 300 };
+        layout.Controls.Add(save); dialog.AcceptButton = save;
+        if (dialog.ShowDialog() != DialogResult.OK) return;
+        _preferences.FontSize = (int)font.Value; _preferences.HistoryCount = (int)history.Value;
+        _model.Capacity = _preferences.HistoryCount;
+        _preferences.Opacity = (double)opacity.Value / 100; _preferences.AlwaysOnTop = top.Checked;
+        _preferences.ShowOriginal = original.Checked; _preferences.ShowTranslation = translation.Checked;
+        _preferences.LockPosition = locked.Checked; _preferences.ClickThrough = click.Checked;
+        Opacity = _preferences.Opacity; TopMost = _preferences.AlwaysOnTop;
+        // Preserve controls and current scroll position while applying appearance changes.
+        foreach (SubtitleBlock block in _history.Controls) block.ApplyPreferences();
+        if (_model.Entries.LastOrDefault() is { } latest) ShowSubtitle(latest);
+        SavePreferences();
+        RecreateHandle();
+    }
+
+    private void VerifyPresentation()
+    {
+        var lastId = Guid.Empty;
+        for (var i = 0; i < 8; i++)
+        {
+            lastId = Guid.NewGuid();
+            ShowSubtitle(new DesktopSubtitleResult(string.Join(" ", Enumerable.Repeat("Long wrapping subtitle 你好", 12)), "", true, lastId));
+        }
+        if (_history.Controls.Count != 5) throw new Exception("History was not bounded");
+        var block = _blocks[lastId];
+        ShowSubtitle(new DesktopSubtitleResult("Final original", "Translated text", true, lastId, true));
+        if (!ReferenceEquals(_blocks[lastId], block) || _history.Controls.Count != 5) throw new Exception("Translation rebuilt or duplicated its block");
+        _history.AutoScrollPosition = Point.Empty;
+        ShowSubtitle(new DesktopSubtitleResult("Final original", "A longer translated text", true, lastId, true));
+        if (_history.VerticalScroll.Value != 0) throw new Exception("Translation forced scroll to bottom");
+        ShowSubtitle(new DesktopSubtitleResult("new source", "", true, Guid.NewGuid()));
+        if (_history.VerticalScroll.Value != 0) throw new Exception("New source forced scroll to bottom");
+        _history.AutoScrollPosition = new Point(0, Math.Max(0, _history.VerticalScroll.Maximum - _history.VerticalScroll.LargeChange + 1));
+        ShowSubtitle(new DesktopSubtitleResult("latest source", "", true, Guid.NewGuid()));
+        if (!IsAtBottom()) throw new Exception("New source failed to anchor at bottom");
+        Width = 500; ResizeBlocks();
+        foreach (SubtitleBlock entry in _history.Controls)
+            if (entry.Width > _history.ClientSize.Width) throw new Exception("Subtitle overflows window width");
     }
 
     private bool IsAtBottom()
@@ -198,31 +352,59 @@ public sealed class SubtitleWindow : Form
 
     private void ResizeBlocks()
     {
+        var follow = IsAtBottom();
+        var y = _history.VerticalScroll.Value;
         _history.SuspendLayout();
         foreach (SubtitleBlock block in _history.Controls) block.UpdateWidth(BlockWidth());
         _history.ResumeLayout(true);
+        _history.AutoScrollPosition = new Point(0, follow ? Math.Max(0, _history.VerticalScroll.Maximum - _history.VerticalScroll.LargeChange + 1) : y);
     }
 
+    private sealed class BufferedHistory : FlowLayoutPanel
+    {
+        public BufferedHistory() { DoubleBuffered = true; }
+        protected override Point ScrollToControl(Control activeControl) => DisplayRectangle.Location;
+    }
     private sealed class SubtitleBlock : Panel
     {
         private readonly Label _original = new();
         private readonly Label _translated = new();
 
-        public SubtitleBlock(DesktopSubtitleResult result, int width)
+        private readonly SubtitlePreferences _preferences;
+        public SubtitleBlock(DesktopSubtitleResult result, int width, SubtitlePreferences preferences)
         {
+            _preferences = preferences;
+            DoubleBuffered = true;
             BackColor = Color.Transparent;
             Margin = new Padding(0, 0, 0, 13);
             _original.ForeColor = Color.White;
-            _original.Font = new Font("Segoe UI", 13);
+            _original.Font = new Font("Segoe UI", _preferences.FontSize);
             _original.AutoSize = true;
             _translated.ForeColor = Color.FromArgb(151, 228, 194);
-            _translated.Font = new Font("Segoe UI Semibold", 14);
+            _translated.Font = new Font("Segoe UI Semibold", _preferences.FontSize + 1);
             _translated.AutoSize = true;
             Controls.Add(_original);
             Controls.Add(_translated);
+            ApplyPreferences();
             UpdateText(result, width);
         }
 
+        public void ApplyPreferences()
+        {
+            var oldOriginal = _original.Font; var oldTranslated = _translated.Font;
+            _original.Font = new Font("Segoe UI", _preferences.FontSize);
+            _translated.Font = new Font("Segoe UI Semibold", _preferences.FontSize + 1);
+            oldOriginal.Dispose(); oldTranslated.Dispose();
+            _original.Visible = _preferences.ShowOriginal;
+            _translated.Visible = _preferences.ShowTranslation;
+            UpdateWidth(Width);
+        }
+        protected override void Dispose(bool disposing)
+        {
+            var originalFont = _original.Font; var translatedFont = _translated.Font;
+            base.Dispose(disposing);
+            if (disposing) { originalFont.Dispose(); translatedFont.Dispose(); }
+        }
         public void UpdateText(DesktopSubtitleResult result, int width)
         {
             SuspendLayout();
@@ -238,10 +420,8 @@ public sealed class SubtitleWindow : Form
             _original.MaximumSize = new Size(width, 0);
             _translated.MaximumSize = new Size(width, 0);
             _original.Location = Point.Empty;
-            _translated.Location = new Point(0, _original.PreferredHeight + 4);
-            Height = Math.Max(76, _translated.Top + Math.Max(_translated.PreferredHeight, 25));
+            _translated.Location = new Point(0, (_preferences.ShowOriginal ? _original.PreferredHeight + 4 : 0));
+            Height = Math.Max(20, _translated.Top + (_preferences.ShowTranslation && _translated.Text.Length > 0 ? _translated.PreferredHeight : 0));
         }
     }
 }
-
-internal sealed record DesktopSubtitleResult(string OriginalText, string TranslatedText, bool IsFinal);

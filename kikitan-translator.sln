@@ -10,6 +10,12 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KikitanTranslator.Resources
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KikitanTranslator.Subtitles", "KikitanTranslator.Subtitles\KikitanTranslator.Subtitles.csproj", "{B8E51F08-2C0F-4429-8E91-062BA320542B}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0AB3BF05-4346-4AA6-1389-037BE0695223}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DesktopTranslator.Tests", "tests\DesktopTranslator.Tests\DesktopTranslator.Tests.csproj", "{60694FF9-0707-4EFD-AE49-E3BB0397AE2F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "KikitanTranslator.Console", "KikitanTranslator.Console\KikitanTranslator.Console.csproj", "{A8161C00-9E21-4DD7-A61B-6B48A4087DAA}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -36,5 +42,20 @@ Global
 		{B8E51F08-2C0F-4429-8E91-062BA320542B}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{B8E51F08-2C0F-4429-8E91-062BA320542B}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{B8E51F08-2C0F-4429-8E91-062BA320542B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{60694FF9-0707-4EFD-AE49-E3BB0397AE2F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{60694FF9-0707-4EFD-AE49-E3BB0397AE2F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{60694FF9-0707-4EFD-AE49-E3BB0397AE2F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{60694FF9-0707-4EFD-AE49-E3BB0397AE2F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A8161C00-9E21-4DD7-A61B-6B48A4087DAA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A8161C00-9E21-4DD7-A61B-6B48A4087DAA}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A8161C00-9E21-4DD7-A61B-6B48A4087DAA}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A8161C00-9E21-4DD7-A61B-6B48A4087DAA}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{60694FF9-0707-4EFD-AE49-E3BB0397AE2F} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{A8161C00-9E21-4DD7-A61B-6B48A4087DAA} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 	EndGlobalSection
 EndGlobal

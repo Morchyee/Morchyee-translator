@@ -1,4 +1,4 @@
-﻿/* === AI DISCLOSURE=== 
+/* === AI DISCLOSURE===
  * This part of the code has been assisted by AI
  */
 using Microsoft.ML.OnnxRuntime;
@@ -33,7 +33,7 @@ public sealed class SileroVad : IDisposable
 
     public SileroVad(string path)
     {
-        var options = new SessionOptions();
+        using var options = new SessionOptions();
         options.IntraOpNumThreads = 1;
         options.InterOpNumThreads = 1;
         options.ExecutionMode = ExecutionMode.ORT_SEQUENTIAL;

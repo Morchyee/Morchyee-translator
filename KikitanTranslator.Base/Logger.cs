@@ -1,4 +1,4 @@
-﻿using KikitanTranslator.Utility;
+using KikitanTranslator.Utility;
 using Serilog;
 
 namespace KikitanTranslator.Base;
@@ -15,8 +15,8 @@ public static class Logger
         ]);
 
         Log.Logger = new LoggerConfiguration()
-            .MinimumLevel.Verbose()
-            .WriteTo.File(logPath,
+            .MinimumLevel.Information()
+            .WriteTo.File(logPath, fileSizeLimitBytes: 5_000_000, rollOnFileSizeLimit: true, retainedFileCountLimit: 7,
                 outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss} [{Level:u3}] {Message:lj}{NewLine}{Exception}")
             .WriteTo.Console()
             .CreateLogger();

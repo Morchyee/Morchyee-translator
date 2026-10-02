@@ -1,4 +1,4 @@
-﻿using KikitanTranslator.Utility;
+using KikitanTranslator.Utility;
 using Serilog;
 using SoundFlow.Abstracts.Devices;
 using SoundFlow.Backends.MiniAudio;
@@ -10,7 +10,7 @@ using SoundFlow.Structs;
 
 namespace KikitanTranslator.Capture;
 
-public class Microphone : ICapture
+public class Microphone : ICapture, IDisposable
 {
     public event OnData? OnDataReceived;
     private bool _paused;
@@ -148,4 +148,11 @@ public class Microphone : ICapture
 
         OnDataReceived?.Invoke(samples.ToArray(), part1 || part2);
     }
+    public void Dispose()
+    {
+        Stop();
+        _vad.Dispose();
+        _engine.Dispose();
+    }
+
 }

@@ -1,4 +1,5 @@
-﻿using System.Net;
+using System.Threading.Channels;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using KikitanTranslator.Capture;
@@ -16,7 +17,7 @@ public class GroqRecognizer : IRecognizer
     public event OnRecognizerStatus? OnRecognizerStatusChanged;
 
     private readonly ICapture _capture;
-    private readonly HttpClient _httpClient = new();
+    private readonly HttpClient _httpClient;
 
     private RecognizerStatus _status = RecognizerStatus.NotStarted;
 
@@ -26,39 +27,32 @@ public class GroqRecognizer : IRecognizer
     private readonly Queue<(float[] samples, bool speech)> _frameQueue = new();
     private readonly SemaphoreSlim _processingSemaphore = new(1, 1);
     private readonly CancellationTokenSource _cancellation = new();
-    private readonly List<Task> _transcriptions = [];
+    private readonly Channel<float[]> _utterances = Channel.CreateBounded<float[]>(8);
+    private Task? _transcriptionWorker;
+    private IErrorHandler? _errorHandler;
+    private DateTime _lastError;
     private volatile bool _stopping;
     private bool _disposed;
 
     private string _language;
 
-    public GroqRecognizer(ICapture capture)
+    public GroqRecognizer(ICapture capture) : this(capture, new HttpClient { Timeout = TimeSpan.FromSeconds(25) }) { }
+    public GroqRecognizer(ICapture capture, HttpClient client)
     {
+        _httpClient = client;
         _capture = capture;
         _capture.OnDataReceived += OnDataReceived;
     }
 
     public void Start(string language, IErrorHandler errorHandler)
     {
-        if (_disposed) return;
+        if (_disposed || _stopping) return;
+        _errorHandler = errorHandler;
         Log.Information($"[GROQ] Start requested: capture={_capture.GetType().Name}, language={language}, status={_status}");
         if (string.IsNullOrEmpty(AppConfig.ConfigObject.GroqApiKey))
         {
             Log.Error("[GROQ] No API key is configured!");
-            errorHandler.OnError("GROQ_NO_API_KEY");
-
-            return;
-        }
-        
-        using var client = new HttpClient();
-        client.DefaultRequestHeaders.Add("Authorization", $"Bearer {AppConfig.ConfigObject.GroqApiKey}");
-        using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.groq.com/openai/v1/audio/transcriptions");
-
-        using var response = client.Send(request);
-        if (response.StatusCode == HttpStatusCode.Unauthorized)
-        {
-            Log.Error("[GROQ] Invalid Groq API key!");
-            errorHandler.OnError("GROQ_INVALID_API_KEY");
+            errorHandler.OnError("Groq speech API key is missing. Open settings to save one.");
 
             return;
         }
@@ -78,6 +72,7 @@ public class GroqRecognizer : IRecognizer
 
         _language = language;
 
+        _transcriptionWorker = Task.Run(ProcessUtterancesAsync);
         SetStatus(RecognizerStatus.Running);
         Log.Information("[GROQ] Started Groq recognizer");
     }
@@ -85,6 +80,8 @@ public class GroqRecognizer : IRecognizer
     public void Stop()
     {
         _stopping = true;
+        _cancellation.Cancel();
+        _utterances.Writer.TryComplete();
         _capture.Stop();
         _processingSemaphore.Wait();
         try
@@ -98,9 +95,7 @@ public class GroqRecognizer : IRecognizer
             _processingSemaphore.Release();
         }
         _cancellation.Cancel();
-        Task[] pending;
-        lock (_transcriptions) pending = _transcriptions.ToArray();
-        Task.WhenAll(pending).GetAwaiter().GetResult();
+        _transcriptionWorker?.GetAwaiter().GetResult();
         SetStatus(RecognizerStatus.NotStarted);
         Log.Information("[GROQ] Stopped Groq recognizer");
     }
@@ -110,7 +105,11 @@ public class GroqRecognizer : IRecognizer
     private void OnDataReceived(float[] samples, bool speech)
     {
         if (_stopping) return;
-        lock (_frameQueue) _frameQueue.Enqueue((samples, speech));
+        lock (_frameQueue)
+        {
+            if (_frameQueue.Count >= 256) _frameQueue.Dequeue();
+            _frameQueue.Enqueue((samples, speech));
+        }
         DrainQueue();
     }
 
@@ -150,6 +149,13 @@ public class GroqRecognizer : IRecognizer
             }
             
             _speechBuffer.AddRange(samples);
+            if (_speechBuffer.Count >= _capture.GetSampleRate() * 20)
+            {
+                var audio = _speechBuffer.ToArray();
+                _speechBuffer.Clear();
+                _isCollectingSpeech = false;
+                StartTranscription(audio);
+            }
         }
         else if (_isCollectingSpeech)
         {
@@ -169,12 +175,26 @@ public class GroqRecognizer : IRecognizer
 
     private void StartTranscription(float[] samples)
     {
-        lock (_transcriptions)
+        if (!_stopping && !_utterances.Writer.TryWrite(samples))
+            ReportError("Speech recognition is falling behind. Check the network or restart translation.");
+    }
+    private async Task ProcessUtterancesAsync()
+    {
+        try
         {
-            if (_stopping) return;
-            _transcriptions.RemoveAll(task => task.IsCompleted);
-            _transcriptions.Add(TranscribeAsync(samples, _capture.GetSampleRate(), _cancellation.Token));
+            await foreach (var audio in _utterances.Reader.ReadAllAsync(_cancellation.Token))
+            {
+                if (_cancellation.IsCancellationRequested) break;
+                await TranscribeAsync(audio, _capture.GetSampleRate(), _cancellation.Token);
+            }
         }
+        catch (OperationCanceledException) when (_cancellation.IsCancellationRequested) { }
+    }
+    private void ReportError(string message)
+    {
+        if (DateTime.UtcNow - _lastError < TimeSpan.FromSeconds(15)) return;
+        _lastError = DateTime.UtcNow;
+        _errorHandler?.OnError(message);
     }
 
     private async Task TranscribeAsync(float[] samples, uint sampleRate, CancellationToken cancellationToken)
@@ -212,7 +232,8 @@ public class GroqRecognizer : IRecognizer
 
             if (!response.IsSuccessStatusCode)
             {
-                Log.Error($"[GROQ] Whisper API error {(int)response.StatusCode}: {await response.Content.ReadAsStringAsync(cancellationToken)}");
+                Log.Error("[GROQ] Speech recognition API returned HTTP {Status}", (int)response.StatusCode);
+                ReportError($"Groq speech recognition returned HTTP {(int)response.StatusCode}. Check credentials, quota and network.");
                 
                 return;
             }
@@ -229,7 +250,8 @@ public class GroqRecognizer : IRecognizer
         }
         catch (Exception ex)
         {
-            Log.Error(ex, $"[GROQ] Transcription failed: request={requestId}, elapsedMs={requestTimer.ElapsedMilliseconds}");
+            Log.Warning("[GROQ] Transcription failed: {ErrorType}", ex.GetType().Name);
+            ReportError("Groq speech recognition failed or timed out. Check credentials and network.");
         }
     }
 

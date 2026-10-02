@@ -1,4 +1,4 @@
-﻿using Newtonsoft.Json;
+using Newtonsoft.Json;
 using Photino.NET;
 using Serilog;
 
@@ -41,7 +41,8 @@ public class MessageHandler
         }
         catch (Exception e)
         {
-            Log.Error($"[MSGH] An error occured while trying to handle the message [{msg}]: {e}");
+            Log.Error("[MSGH] Message handling failed: {ErrorType}", e.GetType().Name);
+            new ErrorHandler(conn).OnError(e is InvalidOperationException ? e.Message : "Could not apply settings. Check configuration and file permissions.");
         }
 
         return null;

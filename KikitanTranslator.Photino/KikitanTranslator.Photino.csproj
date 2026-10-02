@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
         <OutputType Condition="'$(RuntimeIdentifier)' == 'linux-x64'">Exe</OutputType>
         <OutputType Condition="'$(RuntimeIdentifier)' != 'linux-x64'">WinExe</OutputType>
@@ -11,7 +11,10 @@
         <ApplicationIcon>Resources/wwwroot/kikitan_logo.ico</ApplicationIcon>
         <Version>2.0.2</Version>
         <PackageId>KikitanTranslator</PackageId>
-        <Title>Kikitan Translator</Title>
+        <Title>Desktop Translator</Title>
+        <AssemblyName>DesktopTranslator</AssemblyName>
+        <Product>Desktop Translator</Product>
+        <Description>Windows real-time bilingual desktop subtitles</Description>
     </PropertyGroup>
 
     <PropertyGroup Condition="'$(Configuration)' == 'Release' And '$(RuntimeIdentifier)' == ''">
@@ -34,9 +37,10 @@
         <EmbeddedResource Include="Resources\wwwroot\**" />
     </ItemGroup>
 
-    <ItemGroup Condition="'$(Configuration)' != 'Release'">
-        <Content Include="wwwroot\**">
+    <ItemGroup>
+        <Content Include="Resources\wwwroot\**" Link="wwwroot\%(RecursiveDir)%(Filename)%(Extension)">
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+            <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
         </Content>
     </ItemGroup>
 
@@ -44,7 +48,7 @@
         <ProjectReference Include="..\KikitanTranslator.Base\KikitanTranslator.Base.csproj" />
     </ItemGroup>
 
-    <Target Name="NpmBuild" BeforeTargets="CopyDistToWwwroot" Condition="'$(Configuration)' == 'Release'">
+    <Target Name="NpmBuild" BeforeTargets="CopyDistToWwwroot" Condition="'$(Configuration)' == 'Release' AND '$(SkipNpmBuild)' != 'true'">
         <Exec Command="npm run build" WorkingDirectory="$(MSBuildProjectDirectory)/UserInterface" />
     </Target>
 
@@ -78,12 +82,27 @@
             DestinationFiles="@(SubtitleFiles->'$(OutDir)%(RecursiveDir)%(Filename)%(Extension)')"
             SkipUnchangedFiles="true" />
     </Target>
+    <Target Name="CopyWebAssetsToPublish" AfterTargets="Publish" DependsOnTargets="NpmBuild" Condition="'$(Configuration)' == 'Release'">
+        <Error Condition="!Exists('$(MSBuildProjectDirectory)/UserInterface/dist/index.html')" Text="Frontend assets are missing; run npm run build in UserInterface before publishing." />
+        <Error Condition="!Exists('$(MSBuildProjectDirectory)/Resources/wwwroot/silero_vad.onnx')" Text="Silero VAD model is missing from Resources/wwwroot." />
+        <ItemGroup>
+            <PublishDistFiles Include="$(MSBuildProjectDirectory)/UserInterface/dist/**/*" />
+            <PublishResourceFiles Include="$(MSBuildProjectDirectory)/Resources/wwwroot/**/*" />
+        </ItemGroup>
+        <Copy SourceFiles="@(PublishDistFiles)" DestinationFiles="@(PublishDistFiles->'$(PublishDir)wwwroot/%(RecursiveDir)%(Filename)%(Extension)')" />
+        <Copy SourceFiles="@(PublishResourceFiles)" DestinationFiles="@(PublishResourceFiles->'$(PublishDir)wwwroot/%(RecursiveDir)%(Filename)%(Extension)')" />
+    </Target>
+    <Target Name="PublishSubtitles" AfterTargets="Publish" Condition="'$(Configuration)' == 'Release' AND '$(RuntimeIdentifier)' == 'win-x64'">
+        <MSBuild Projects="$(MSBuildThisFileDirectory)..\KikitanTranslator.Subtitles\KikitanTranslator.Subtitles.csproj"
+                 Targets="Restore;Publish"
+                 Properties="Configuration=Release;RuntimeIdentifier=win-x64;SelfContained=true;PublishSingleFile=true;IncludeNativeLibrariesForSelfExtract=true;DebugType=None;PublishDir=$(PublishDir)" />
+    </Target>
 
     <Target Name="VelopackPack"
             AfterTargets="BuildAndCopySubtitles"
-            Condition="'$(Configuration)' == 'Release' AND '$(RuntimeIdentifier)' == 'win-x64'">
+            Condition="'$(Configuration)' == 'Release' AND '$(RuntimeIdentifier)' == 'win-x64' AND '$(SkipVelopack)' != 'true'">
         <RemoveDir Directories="$(OutDir)Release" />
-        <Exec Command="vpk pack --packId $(PackageId) --packVersion $(Version) --packDir &quot;$(MSBuildProjectDirectory)/bin/Release/net9.0/win-x64&quot; --mainExe KikitanTranslator.Photino.exe --icon &quot;$(MSBuildProjectDirectory)/Resources/wwwroot/kikitan_logo.ico&quot; --packTitle &quot;$(Title)&quot; -o &quot;$(OutDir)Release&quot; -f net9.0-x64-runtime,net9.0-x64-aspnetcore,net9.0-x64-desktop,webview2" />
+        <Exec Command="vpk pack --packId $(PackageId) --packVersion $(Version) --packDir &quot;$(MSBuildProjectDirectory)/bin/Release/net9.0/win-x64&quot; --mainExe DesktopTranslator.exe --icon &quot;$(MSBuildProjectDirectory)/Resources/wwwroot/kikitan_logo.ico&quot; --packTitle &quot;$(Title)&quot; -o &quot;$(OutDir)Release&quot; -f net9.0-x64-runtime,net9.0-x64-aspnetcore,net9.0-x64-desktop,webview2" />
     </Target>
 
     <Target Name="VelopackPackLinux"

@@ -1,4 +1,4 @@
-﻿using KikitanTranslator.Utility;
+using KikitanTranslator.Utility;
 using Newtonsoft.Json;
 using Serilog;
 
@@ -14,6 +14,7 @@ public class UpdateConfig(Manager manager) : IHandler
 {
     public async Task<string?> OnDataReceived(string data)
     {
+        if (AppConfig.LoadError != null) throw new InvalidOperationException(AppConfig.LoadError);
         bool doNotRestart = false;
         
         var d = JsonConvert.DeserializeObject<ConfigUpdate>(data);
@@ -22,16 +23,22 @@ public class UpdateConfig(Manager manager) : IHandler
 
         switch (d.Field)
         {
+            case "auto_start":
+                AppConfig.ConfigObject.AutoStart = (bool)d.Value;
+                doNotRestart = true;
+                break;
             case "language":
                 AppConfig.ConfigObject.Language = (string) d.Value;
                 doNotRestart = true;
                 
                 break;
             case "source_language":
+                if (!Languages.SourceLanguages.ContainsKey((string)d.Value)) throw new InvalidOperationException("Unsupported source language.");
                 AppConfig.ConfigObject.SourceLanguage = (string) d.Value;
                 
                 break;
             case "target_language":
+                if (!Languages.TargetLanguages.ContainsKey((string)d.Value)) throw new InvalidOperationException("Unsupported target language.");
                 AppConfig.ConfigObject.TargetLanguage = (string) d.Value;
                 
                 break;
@@ -98,6 +105,7 @@ public class UpdateConfig(Manager manager) : IHandler
                 var provider = (string)d.Value;
                 if (provider is "google" or "deepl" or "groq")
                     AppConfig.ConfigObject.DesktopTranslationProvider = provider;
+                else throw new InvalidOperationException("Unsupported translation provider.");
                 break;
             case "google_cloud_api_key":
                 AppConfig.ConfigObject.GoogleCloudApiKey = (string)d.Value;
@@ -124,7 +132,7 @@ public class UpdateConfig(Manager manager) : IHandler
                 
                 break;
             default:
-                Log.Warning($"[CFG]  Received an unknown field {d.Field} with value {d.Value} while trying to update the config!");
+                Log.Warning($"[CFG]  Received an unknown field {d.Field} while trying to update the config!");
                 
                 break;
         }

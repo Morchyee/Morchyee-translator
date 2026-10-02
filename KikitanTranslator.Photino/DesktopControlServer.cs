@@ -19,7 +19,7 @@ internal sealed class DesktopControlServer : IDisposable
                 {
                     await using var pipe = new NamedPipeServerStream(
                         $"kikitan-desktop-control-{Environment.ProcessId}", PipeDirection.In, 1,
-                        PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+                        PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
                     await pipe.WaitForConnectionAsync(_cancellation.Token);
                     using var reader = new StreamReader(pipe, Encoding.UTF8);
                     var command = await reader.ReadLineAsync(_cancellation.Token);

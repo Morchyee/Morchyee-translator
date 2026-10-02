@@ -1,17 +1,20 @@
-﻿using Serilog;
+using Serilog;
 
 namespace KikitanTranslator.Photino.Handlers;
 
 public class Fetch : IHandler
 {
+    private static readonly HttpClient Client = new() { Timeout = TimeSpan.FromSeconds(10) };
     public async Task<string?> OnDataReceived(string data)
     {
         try
         {
-            return await new HttpClient().GetStringAsync(data);
+            if (!Uri.TryCreate(data, UriKind.Absolute, out var uri) || uri.Scheme != "https" ||
+                uri.Host != "raw.githubusercontent.com") return "";
+            return await Client.GetStringAsync(uri);
         } catch (Exception e)
         {
-            Log.Error($"[MSGH] Error when fetching from url {data}!: {e}");
+            Log.Warning("[MSGH] Fetch failed: {ErrorType}", e.GetType().Name);
 
             return "";
         }

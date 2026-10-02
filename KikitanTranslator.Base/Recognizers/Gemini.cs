@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Net.WebSockets;
 using System.Resources;
 using System.Runtime.InteropServices;
@@ -238,7 +238,7 @@ public class Gemini(ICapture capture) : IRecognizer
                 }
                 catch (Exception e)
                 {
-                    Log.Error(e, "[GEMI] WebSocket callback failed");
+                    Log.Error("[GEMI] WebSocket callback failed: {ErrorType}", e.GetType().Name);
                 }
             }));
         }

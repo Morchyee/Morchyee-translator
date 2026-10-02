@@ -1,4 +1,4 @@
-﻿import {app_state} from "./constants.ts";
+import {app_state} from "./constants.ts";
 
 const pendingRequests = new Map();
 let recognitionCallback: ((r: string, t: string, f: boolean) => void) | null = null;
@@ -23,7 +23,7 @@ export function init() {
             return;
         } else if (response.method == "fetch") {
             const resolve = pendingRequests.get(response.method);
-            resolve(response.data);
+            resolve?.(response.data);
             pendingRequests.delete(response.method);
 
             return
@@ -45,7 +45,7 @@ export function init() {
         }
 
         const resolve = pendingRequests.get(response.method);
-        resolve(JSON.parse(response.data));
+        resolve?.(JSON.parse(response.data));
         pendingRequests.delete(response.method);
     });
 }
@@ -132,4 +132,8 @@ export function registerMicrophoneChangedCallback(callback: () => void) {
 
 export function registerNotificationCallback(callback: (msg: string, level: number) => void) {
     notificationCallback = callback;
+}
+export function showSubtitles() {
+    // @ts-ignore
+    window.external.sendMessage(JSON.stringify({method: "control", data: "SHOW"}));
 }

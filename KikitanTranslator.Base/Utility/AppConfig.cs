@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using Newtonsoft.Json;
 using Serilog;
@@ -375,6 +375,14 @@ public class ConfigObject : INotifyPropertyChanged
         }
     }
 
+    [JsonProperty("auto_start")] private bool _autoStart = true;
+    [JsonIgnore]
+    public bool AutoStart
+    {
+        get => _autoStart;
+        set { if (_autoStart != value) { _autoStart = value; OnPropertyChanged(); } }
+    }
+
     public event PropertyChangedEventHandler? PropertyChanged;
 
     protected void OnPropertyChanged([CallerMemberName] string propertyName = null)
@@ -387,70 +395,79 @@ public delegate void OnConfigUpdate();
 
 public static class AppConfig
 {
-    public static ConfigObject ConfigObject;
+    public static ConfigObject ConfigObject = new();
     public static event OnConfigUpdate? OnUpdate;
-    private static string _currentConfigPath;
+    private static string _currentConfigPath = "";
+    private static readonly object SaveLock = new();
+    public static string? LoadError { get; private set; }
+    public static readonly string[] SecretFields = ["groq_api_key", "google_cloud_api_key", "deepl_api_key", "gemini_api_key"];
 
     public static string GetAppFolder()
     {
-        string basePath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        string appFolder = Path.Combine(basePath, "Kikitan Translator");
-        Directory.CreateDirectory(appFolder);
-
-        return appFolder;
+        var folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Kikitan Translator");
+        Directory.CreateDirectory(folder);
+        return folder; // Keep the existing location for seamless upgrades.
     }
-
-    public static void Load() => Load(Path.Join(GetAppFolder(), "config.json"));
-
+    public static void Load() => Load(Path.Combine(GetAppFolder(), "config.json"));
     public static void Load(string configPath)
     {
-        if (!Path.Exists(configPath))
-        {
-            Log.Warning("[CFG]  Specified path is nonexistent (perhaps first launch?). Using the default configuration");
-
-            ConfigObject = new ConfigObject();
-            ConfigObject.PropertyChanged += OnConfigPropertyChanged;
-            _currentConfigPath = configPath;
-            
-            SaveConfig();
-
-            return;
-        }
-
+        ConfigObject.PropertyChanged -= OnConfigPropertyChanged;
+        _currentConfigPath = configPath;
+        LoadError = null;
+        ConfigObject = new();
         try
         {
-            ConfigObject? cfg = JsonConvert.DeserializeObject<ConfigObject>(File.ReadAllText(configPath));
-            if (cfg == null)
+            if (File.Exists(configPath))
             {
-                Log.Error("[CFG]  Deserialization result returned null!");
-
-                return;
+                var json = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(configPath));
+                foreach (var field in SecretFields)
+                    if (json[field]?.Type == Newtonsoft.Json.Linq.JTokenType.String)
+                        json[field] = CredentialProtection.Unprotect((string)json[field]!);
+                ConfigObject = json.ToObject<ConfigObject>() ?? throw new JsonException("Empty configuration");
             }
-
-            ConfigObject = cfg;
-            ConfigObject.PropertyChanged += OnConfigPropertyChanged;
-            _currentConfigPath = configPath;
-            
-            Log.Information($"[CFG]  Loaded from {configPath}");
+            SaveConfig(); // Atomically migrate plaintext credentials only after successful load/protection.
         }
         catch (Exception e)
         {
-            Log.Error($"[CFG]  Error occured while trying to load the config file!: {e}");
-
-            return;
+            LoadError = "Could not load or migrate configuration. The original file was preserved. Check file permissions and Windows credentials before editing settings.";
+            Log.Error("[CFG] Configuration unavailable: {ErrorType}. Original file preserved.", e.GetType().Name);
+        }
+        ConfigObject.PropertyChanged += OnConfigPropertyChanged;
+    }
+    public static Newtonsoft.Json.Linq.JObject PublicConfig()
+    {
+        var config = Newtonsoft.Json.Linq.JObject.FromObject(ConfigObject);
+        foreach (var field in SecretFields)
+        {
+            config[field + "_configured"] = !string.IsNullOrWhiteSpace((string?)config[field]);
+            config[field] = "";
+        }
+        return config;
+    }
+    public static void SetDesktopModeForSession(bool enabled)
+    {
+        ConfigObject.PropertyChanged -= OnConfigPropertyChanged;
+        ConfigObject.DesktopTranslation = enabled;
+        ConfigObject.PropertyChanged += OnConfigPropertyChanged;
+    }
+    public static void SaveConfig()
+    {
+        lock (SaveLock)
+        {
+            if (LoadError != null) throw new InvalidOperationException(LoadError);
+            var json = Newtonsoft.Json.Linq.JObject.FromObject(ConfigObject);
+            foreach (var field in SecretFields)
+                json[field] = CredentialProtection.Protect((string?)json[field] ?? "");
+            var directory = Path.GetDirectoryName(Path.GetFullPath(_currentConfigPath))!;
+            Directory.CreateDirectory(directory);
+            var temp = _currentConfigPath + ".tmp";
+            File.WriteAllText(temp, json.ToString(Formatting.Indented));
+            File.Move(temp, _currentConfigPath, true);
         }
     }
-    
-    public static void SaveConfig() {
-        File.WriteAllText(_currentConfigPath, JsonConvert.SerializeObject(ConfigObject, Formatting.Indented));
-        
-        Log.Verbose($"[CFG]  Saved to {_currentConfigPath}");
-    }
-
-    private static void OnConfigPropertyChanged(object sender, PropertyChangedEventArgs e)
+    private static void OnConfigPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
         SaveConfig();
-        
-        OnUpdate?.Invoke();   
+        OnUpdate?.Invoke();
     }
 }

@@ -1,4 +1,5 @@
-﻿using KikitanTranslator.Base.Outputs;
+using System.Threading.Channels;
+using KikitanTranslator.Base.Outputs;
 using KikitanTranslator.Base.Translators;
 using KikitanTranslator.Recognizers;
 using KikitanTranslator.Utility;
@@ -6,209 +7,162 @@ using Serilog;
 
 namespace KikitanTranslator.Base;
 
-public class Kikitan : IDisposable
+public sealed class Kikitan : IDisposable
 {
-    private IRecognizer _recognizer;
-    private ITranslator _translator;
-    private IErrorHandler _errorHandler;
-    private List<IOutput> _outputs = [];
-
-    private List<string[]> _queue = [];
-    private readonly object _queueLock = new object();
-
+    private readonly IRecognizer _recognizer;
+    private readonly ITranslator _translator;
+    private readonly IErrorHandler _errorHandler;
+    private readonly List<IOutput> _outputs = [];
+    private readonly bool _isLoopback;
     private readonly object _recognitionLock = new();
-    private readonly CancellationTokenSource _workerCancellation = new();
-    private Task? _workerTask;
+    private readonly CancellationTokenSource _lifetime = new();
+    private readonly Channel<PendingTranslation> _translations = Channel.CreateBounded<PendingTranslation>(32);
+    private readonly Channel<(string Source, string Translation)> _delayed = Channel.CreateBounded<(string, string)>(32);
+    private Task? _translationWorker;
+    private Task? _outputWorker;
     private volatile bool _running;
     private bool _disposed;
-    private bool _isLoopback;
-    
+    private bool _started;
+    private Guid _utteranceId = Guid.NewGuid();
+    private DateTime _lastFailure;
+
+    private sealed record PendingTranslation(Guid Id, string Text, string Source, string Target, bool TranscriptionOnly);
     public event OnRecognizerStatus? OnRecognizerStatusChanged;
+    public event Action<Guid, string, string, bool, bool>? OnSubtitle;
 
     public Kikitan(IRecognizer recognizer, ITranslator translator, IErrorHandler errorHandler, bool loopback)
     {
         _recognizer = recognizer;
         _translator = translator;
         _errorHandler = errorHandler;
-
+        _isLoopback = loopback;
         recognizer.OnRecognitionReceived += OnRecognition;
         recognizer.OnRecognizerStatusChanged += OnRecognizerStatus;
-        
-        _isLoopback = loopback;
-        
-        Log.Information($"[KKTN] Kikitan is starting up: desktop={_isLoopback}, recognizer={_recognizer.GetType().Name}, translator={_translator.GetType().Name}");
     }
-
     public void AddOutput(IOutput output) => _outputs.Add(output);
-
     public void Start()
     {
-        if (_disposed) throw new ObjectDisposedException(nameof(Kikitan));
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_started) return; // A stopped pipeline is disposed and replaced by Manager.
+        _started = true;
         _running = true;
+        _translationWorker = TranslateQueuedAsync(_lifetime.Token);
+        _outputWorker = SendDelayedAsync(_lifetime.Token);
         _recognizer.Start(AppConfig.ConfigObject.SourceLanguage, _errorHandler);
-        Log.Information($"[KKTN] Recognizer start result: desktop={_isLoopback}, status={_recognizer.Status()}");
-        
-        _workerTask = QueueWorkerAsync(_workerCancellation.Token);
     }
-
-    public void Stop()
-    {
-        _running = false;
-        _recognizer.Stop();
-        _workerCancellation.Cancel();
-        _workerTask?.GetAwaiter().GetResult();
-        lock (_recognitionLock) { }
-        
-        Log.Information("[KKTN] Kikitan has stopped");
-    }
-
     private void OnRecognition(string text, bool final)
     {
         lock (_recognitionLock)
         {
-            if (!_running) return;
-            ProcessRecognition(text, final);
+            if (!_running || string.IsNullOrWhiteSpace(text)) return;
+            var id = _utteranceId;
+            if (AppConfig.ConfigObject.Recognizer == 2)
+            {
+                var parts = text.Split('|', 2);
+                Publish(id, parts[0], parts.Length > 1 ? parts[1] : "", final);
+            }
+            else
+            {
+                // Commit source immediately; translation later updates exactly this ID.
+                OnSubtitle?.Invoke(id, text, "", final, false);
+                foreach (var output in _outputs.Where(o => !o.IsDelayed())) SendOutput(output, text, "", false);
+                if (final && !_translations.Writer.TryWrite(new PendingTranslation(id, text,
+                        AppConfig.ConfigObject.SourceLanguage, AppConfig.ConfigObject.TargetLanguage,
+                        AppConfig.ConfigObject.SpeechToTextOnly)))
+                    ReportFailure("Translation queue is full. Original subtitles are retained.");
+            }
+            if (final) _utteranceId = Guid.NewGuid();
         }
     }
-
-    private void ProcessRecognition(string text, bool final)
+    private async Task TranslateQueuedAsync(CancellationToken token)
     {
-        if (final) Log.Debug($"[KKTN] Final recognition received: desktop={_isLoopback}, chars={text.Length}, running={_running}");
-        if (AppConfig.ConfigObject.Recognizer == 2)
-        {
-            foreach (var output in _outputs)
-            {
-                if (!_running) return;
-                output.Send(text.Split("|")[0], text.Split("|")[1], final);
-            }
-
-            return;
-        }
-        
-        foreach (var output in _outputs)
-        {
-            if (!_running) return;
-            output.Send(text, "", false);
-        }
-
-        if (!final || text.Length == 0) return;
-
-        string? translated;
-        var translationTimer = System.Diagnostics.Stopwatch.StartNew();
-        Log.Debug($"[KKTN] Translation started: desktop={_isLoopback}, translator={_translator.GetType().Name}, chars={text.Length}, transcriptionOnly={AppConfig.ConfigObject.SpeechToTextOnly}");
         try
         {
-            translated = AppConfig.ConfigObject.SpeechToTextOnly ? "" :
-                _translator.Translate(text, AppConfig.ConfigObject.SourceLanguage, AppConfig.ConfigObject.TargetLanguage);
-        }
-        catch (Exception e)
-        {
-            Log.Error(e, $"[KKTN] Translation failed: desktop={_isLoopback}");
-            if (!_isLoopback)
+            await foreach (var item in _translations.Reader.ReadAllAsync(token))
             {
-                _errorHandler.OnError($"Error while translating: {e.Message}");
-                return;
+                if (token.IsCancellationRequested) break;
+                string translated = "";
+                try
+                {
+                    if (!item.TranscriptionOnly)
+                        translated = await _translator.TranslateAsync(item.Text, item.Source, item.Target, token) ?? "";
+                    if (!item.TranscriptionOnly && string.IsNullOrWhiteSpace(translated))
+                        ReportFailure("Translation provider returned no text. Original subtitles are retained.");
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
+                catch (Exception e)
+                {
+                    // Do not log provider exceptions: some include request URLs or credentials.
+                    Log.Warning("[TRANSLATION] Failed with {ErrorType}", e.GetType().Name);
+                    ReportFailure(e is InvalidOperationException ? e.Message :
+                        "Translation failed or timed out. Check provider credentials, languages and network. Original subtitles are retained.");
+                }
+                lock (_recognitionLock)
+                {
+                    if (!_running) break;
+                    Publish(item.Id, item.Text, translated, true, true);
+                }
             }
-            translated = null;
         }
-
-        Log.Debug($"[KKTN] Translation completed: desktop={_isLoopback}, elapsedMs={translationTimer.ElapsedMilliseconds}, resultChars={translated?.Length}, hasResult={translated != null}");
-        if (!_running) return;
-        if (_isLoopback && (AppConfig.ConfigObject.SpeechToTextOnly || string.IsNullOrWhiteSpace(translated)))
-        {
-            if (!AppConfig.ConfigObject.SpeechToTextOnly)
-                Log.Warning("[KKTN] Desktop translation unavailable; sending recognized text");
-            translated = "";
-        }
-        if (translated == null)
-        {
-            Log.Warning("[KKTN] No translation result; final output skipped: desktop={Desktop}", _isLoopback);
-            return;
-        }
-
-        try
-        {
-            lock (_queueLock)
-            {
-                _queue.Add([text, translated]);
-                Log.Debug($"[KKTN] Translation queued: desktop={_isLoopback}, depth={_queue.Count}");
-            }
-
-            foreach (var output in _outputs.Where(v => !v.IsDelayed())) output.Send(text, translated, true);
-        }
-        catch (Exception e)
-        {
-            Log.Error(e, $"[KKTN] Output processing failed: desktop={_isLoopback}");
-            _errorHandler.OnError($"Error while sending output: {e.Message}");
-        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
     }
-
+    private void Publish(Guid id, string text, string translated, bool final, bool translationUpdate = false)
+    {
+        OnSubtitle?.Invoke(id, text, translated, final, translationUpdate);
+        foreach (var output in _outputs.Where(o => !o.IsDelayed())) SendOutput(output, text, translated, final);
+        if (final && _outputs.Any(o => o.IsDelayed()) && !_delayed.Writer.TryWrite((text, translated)))
+            ReportFailure("Delayed output queue is full.");
+    }
+    private static void SendOutput(IOutput output, string source, string translation, bool final)
+    {
+        try { output.Send(source, translation, final); }
+        catch (Exception e) { Log.Warning("[OUTPUT] Delivery failed: {ErrorType}", e.GetType().Name); }
+    }
+    private void ReportFailure(string message)
+    {
+        if (DateTime.UtcNow - _lastFailure < TimeSpan.FromSeconds(15)) return;
+        _lastFailure = DateTime.UtcNow;
+        _errorHandler.OnError(message);
+    }
+    private async Task SendDelayedAsync(CancellationToken token)
+    {
+        try
+        {
+            await foreach (var item in _delayed.Reader.ReadAllAsync(token))
+            {
+                if (token.IsCancellationRequested) break;
+                foreach (var output in _outputs.Where(o => o.IsDelayed())) SendOutput(output, item.Source, item.Translation, true);
+                var length = Math.Max(item.Source.Length, item.Translation.Length);
+                await Task.Delay((int)Math.Clamp((long)length * AppConfig.ConfigObject.ChatboxWaitPerCharMs, 0, 60000), token);
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception e) { Log.Warning("[OUTPUT] Failed with {ErrorType}", e.GetType().Name); }
+    }
     private void OnRecognizerStatus(RecognizerStatus status) => OnRecognizerStatusChanged?.Invoke(status);
-
-    private async Task QueueWorkerAsync(CancellationToken cancellationToken)
-    {
-        try
-        {
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                string[]? texts = null;
-                lock (_queueLock)
-                {
-                    if (_queue.Count > 0)
-                    {
-                        texts = _queue[0];
-                        _queue.RemoveAt(0);
-                    }
-                }
-                if (texts == null)
-                {
-                    await Task.Delay(50, cancellationToken);
-                    continue;
-                }
-
-                Log.Debug($"[KKTN] Processing delayed output: desktop={_isLoopback}, remaining={_queue.Count}, sourceChars={texts[0].Length}, translationChars={texts[1].Length}");
-                if (cancellationToken.IsCancellationRequested) break;
-                foreach (var output in _outputs.Where(v => v.IsDelayed())) output.Send(texts[0], texts[1], true);
-                Log.Verbose($"[KKTN] Waiting {texts[1].Length * AppConfig.ConfigObject.ChatboxWaitPerCharMs}ms...");
-                await Task.Delay(texts[1].Length * AppConfig.ConfigObject.ChatboxWaitPerCharMs, cancellationToken);
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-        }
-        catch (Exception e)
-        {
-            Log.Error(e, $"[KKTN] Delayed output failed: desktop={_isLoopback}");
-            _errorHandler.OnError($"Error while sending output: {e.Message}");
-        }
-    }
-
     public void ManualTranslate(string text) => OnRecognition(text, true);
-
+    public void Stop()
+    {
+        _running = false;
+        _lifetime.Cancel(); // Cancel HTTP before waiting for recognizer callbacks.
+        _recognizer.Stop();
+        Task.WhenAll(_translationWorker ?? Task.CompletedTask, _outputWorker ?? Task.CompletedTask).GetAwaiter().GetResult();
+    }
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
         _running = false;
+        _lifetime.Cancel();
         _recognizer.OnRecognitionReceived -= OnRecognition;
         _recognizer.OnRecognizerStatusChanged -= OnRecognizerStatus;
-        _workerCancellation.Cancel();
-        try
-        {
-            _recognizer.Dispose();
-        }
+        try { _recognizer.Dispose(); }
         finally
         {
-            try
-            {
-                _workerTask?.GetAwaiter().GetResult();
-                lock (_recognitionLock) { }
-            }
-            finally
-            {
-                _translator.Dispose();
-                _workerCancellation.Dispose();
-            }
+            Task.WhenAll(_translationWorker ?? Task.CompletedTask, _outputWorker ?? Task.CompletedTask).GetAwaiter().GetResult();
+            lock (_recognitionLock) { }
+            _translator.Dispose();
+            _lifetime.Dispose();
         }
     }
 }

@@ -1,5 +1,10 @@
 export type config = {
     update_waiting: boolean;
+    auto_start: boolean;
+    groq_api_key_configured: boolean;
+    google_cloud_api_key_configured: boolean;
+    deepl_api_key_configured: boolean;
+    gemini_api_key_configured: boolean;
     language: "en" | "jp" | "cn" | "kr";
     source_language: string;
     target_language: string;
@@ -34,6 +39,7 @@ export type app_state = {
     is_linux: boolean;
     is_appimage: boolean;
     is_muted: boolean;
+    configuration_error?: string;
 }
 
 export const langSource = [

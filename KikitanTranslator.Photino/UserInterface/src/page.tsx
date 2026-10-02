@@ -1,5 +1,6 @@
 import * as React from 'react';
 
+import DesktopSettings from "./pages/DesktopSettings";
 import Kikitan from "./pages/Kikitan"
 
 import {
@@ -87,6 +88,8 @@ function App() {
             }
         }
     }, [])
+
+    if (appState.config?.desktop_translation) return <DesktopSettings state={appState}/>;
 
     return (
         <>

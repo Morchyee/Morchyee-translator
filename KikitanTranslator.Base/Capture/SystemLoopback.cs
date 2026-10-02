@@ -32,6 +32,7 @@ public sealed class SystemLoopback : ICapture
     public event OnData? OnDataReceived;
 
     public SystemLoopback(string sileroModelPath) => _sileroModelPath = sileroModelPath;
+    public bool IsRunning { get { lock (_sync) return _running; } }
     public uint GetSampleRate() => SampleRate;
 
     public bool Start()

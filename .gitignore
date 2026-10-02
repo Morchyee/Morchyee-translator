@@ -1,4 +1,15 @@
 bin
 obj
 Releases
-build-dirrelease/
+build-dir
+release/
+
+# Local generated artifacts
+*.log
+**/node_modules/
+**/dist/
+config.json
+config.json.tmp
+subtitles.json
+subtitles.json.tmp
+docs/pre-existing-changes.patch
