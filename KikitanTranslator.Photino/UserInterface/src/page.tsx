@@ -61,7 +61,6 @@ function App() {
     React.useEffect(() => {
         setTimeout(() => setLoaded(true), 300);
 
-        sendAppState()
         registerStateCallback(state => {
             if (!updateViewed) {
                 setUpdaterText(localization.new_update_available[state.config.language])
@@ -76,6 +75,7 @@ function App() {
             setAppState(state)
             setStateUpdated(!stateUpdated)
         })
+        sendAppState()
 
         if (localStorage.getItem("last_donation") == null) {
             localStorage.setItem("last_donation", "1")
@@ -88,6 +88,8 @@ function App() {
             }
         }
     }, [])
+
+    if (!appState.config) return <div role="status" style={{height: "100vh", display: "grid", placeItems: "center", background: "#171b22", color: "#bac5d4", fontFamily: '"Segoe UI", system-ui, sans-serif', fontSize: 13}}>Opening Desktop Translator…</div>;
 
     if (appState.config?.desktop_translation) return <DesktopSettings state={appState}/>;
 

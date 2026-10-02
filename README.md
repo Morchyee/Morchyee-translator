@@ -6,7 +6,7 @@ A standalone Windows alpha application for real-time bilingual subtitles from sy
 
 1. Extract the complete `DesktopTranslator-<version>-win-x64` folder to a writable location.
 2. Double-click **DesktopTranslator.exe**. A subtitle window and tray icon appear. No Node.js, .NET SDK or terminal is needed for daily use.
-3. Use the tray menu → **Open settings** to choose source language, target language, speech recognition and translation provider. Save your provider API key.
+3. Use the tray menu → **Open settings**. Translation contains language direction and provider setup; Speech recognition configures speech service access. Paste a key and choose **Save key**; a confirmation appears after storage succeeds.
 4. Use **Start translation**, **Stop translation**, **Show/Hide subtitles**, **Subtitle appearance…** and **Exit** from the tray menu. Closing the subtitle window hides it; Exit stops the app.
 
 Requires Windows 10/11 x64, an active playback device, an internet connection for cloud providers, and Microsoft Edge WebView2 Runtime for the settings window (normally present on current Windows). The package includes .NET and Windows Desktop runtimes. Exclusive full-screen games can cover ordinary desktop windows; borderless/windowed mode is recommended.
@@ -29,7 +29,7 @@ Windows API keys are encrypted with **DPAPI CurrentUser** in `%APPDATA%\Kikitan 
 
 The default window shows a bounded five-entry history, wraps long sentences and stays on top. Source recognition appears immediately; translation updates that entry in place even while another sentence is being recognized. Scrolling upward suspends following the latest entry. At the bottom, new content remains anchored to the bottom.
 
-The tray's **Subtitle appearance…** dialog persists font size, whole-window opacity, history count (3–50), always-on-top, source/translation visibility, click-through and position locking. Click-through and position locking can always be disabled from the tray. Window bounds are restored and clamped to an available monitor. Opacity applies to text as well as background; independent background opacity is not implemented.
+Settings → **Subtitles** → **Customize…** (also available as **Subtitle appearance…** in the tray) opens a native live-preview dialog. Save applies changes; Cancel leaves preferences unchanged. The dialog persists font size, whole-window opacity, history count (3–50), always-on-top, source/translation visibility, click-through and position locking. Click-through and position locking can always be disabled from the tray. Window bounds are restored and clamped to an available monitor. Opacity applies to text as well as background; independent background opacity is not implemented.
 
 ## Build and test
 
@@ -37,6 +37,7 @@ Development requires the .NET SDK selected by `global.json` and Node.js/npm. Rus
 
 ```powershell
 npm ci --prefix KikitanTranslator.Photino/UserInterface
+npm test --prefix KikitanTranslator.Photino/UserInterface
 npm run build --prefix KikitanTranslator.Photino/UserInterface
 dotnet build kikitan-translator.sln -m:1
 dotnet run --project tests/DesktopTranslator.Tests --no-build --no-restore
@@ -49,6 +50,8 @@ The regression runner is a dependency-free executable: it exits nonzero on failu
 ```
 
 For interactive debug settings, run `npm run dev --prefix KikitanTranslator.Photino/UserInterface` in another terminal, then `dotnet run --project KikitanTranslator.Photino`. Debug uses the Vite server at port 1420; release serves bundled frontend assets.
+
+The desktop settings use five focused sections and light/dark themes. See [UI design system](docs/UI_DESIGN.md) for visual rules, development-only preview instructions, accessibility checks, and platform compromises.
 
 ## Reproducible Windows release
 

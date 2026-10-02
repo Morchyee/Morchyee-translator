@@ -19,6 +19,7 @@ Push-Location $repoRoot
 try {
     $frontend = Join-Path $repoRoot 'KikitanTranslator.Photino/UserInterface'
     if (!$SkipInstall) { Run npm @('ci', '--prefix', $frontend, '--no-audit', '--no-fund') }
+    Run npm @('test', '--prefix', $frontend)
     Run npm @('run', 'build', '--prefix', $frontend)
     Run dotnet @('build', 'kikitan-translator.sln', '--nologo', '-m:1', '-p:UseSharedCompilation=false')
     Run dotnet @('run', '--project', 'tests/DesktopTranslator.Tests', '--no-build', '--no-restore')

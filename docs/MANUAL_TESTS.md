@@ -14,3 +14,16 @@ These tests require Windows audio hardware and/or real provider credentials. Aut
 10. **Clean machine package:** without SDK/npm installed, run the extracted package with WebView2 available. Confirm frontend and Silero load. Verify no config/log/source/node_modules shipped. Check SHA256SUMS against the extracted files.
 
 Record machine/Windows version, playback hardware, monitor scale, provider and pass/fail details; never record actual credentials.
+
+## Desktop design acceptance
+
+These interaction checks are separate from provider/hardware tests above. Automated bridge/native tests do not substitute for a real Photino keyboard or monitor walkthrough.
+
+1. Open each section in dark and light mode at 900×600 and a larger window. Verify header actions remain reachable, only content scrolls, rows align, provider names fit, and no horizontal overflow occurs.
+2. Repeat at 125%, 150%, and 175% scaling and move settings/subtitles between monitors. Check CJK wrapping, focus outlines, and the native appearance dialog's scroll area and fixed Save/Cancel actions.
+3. Use only Tab, Shift+Tab, Enter, Space, arrows, and Escape. Reach navigation, language/provider selects, switches, password editor, native number controls, Save/Cancel, and the skip link. Review with a screen reader and Windows high-contrast mode.
+4. Select Groq, Google Cloud, and DeepL. Only the selected translation credential appears; Groq speech uses the shared credential. Type a test draft: blur must not save it, Enter/Save must, and successful confirmation must clear it. Use an isolated profile for storage-failure testing: retain the draft on failure, avoid false success, and allow retry. Never put a real key in screenshots.
+5. Customize font, history, original/translation visibility, opacity, lock, and click through. Preview font/visibility should update immediately; Cancel must leave saved preferences unchanged. Reopen after Save/relaunch and check persistence. Recover locked/click-through overlays through settings/tray.
+6. Start/Stop from every section. Verify status and provider problems are understandable, and configured provider labels are not mistaken for verified connectivity. Test the empty subtitle window and first recognition result.
+
+Current environment: native render artifacts inspected; browser automation transport was unavailable. Interactive frontend, screen-reader, high-contrast, and mixed-monitor checks are pending.

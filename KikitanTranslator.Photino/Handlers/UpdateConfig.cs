@@ -8,6 +8,7 @@ public class ConfigUpdate
 {
     [JsonProperty("field")] public string Field;
     [JsonProperty("value")] public object Value;
+    [JsonProperty("request_id")] public long? RequestId;
 }
 
 public class UpdateConfig(Manager manager) : IHandler
@@ -133,12 +134,14 @@ public class UpdateConfig(Manager manager) : IHandler
                 break;
             default:
                 Log.Warning($"[CFG]  Received an unknown field {d.Field} while trying to update the config!");
-                
-                break;
+                throw new InvalidOperationException("Unsupported setting.");
         }
         
+        // A retry with an unchanged in-memory value must still reach durable storage
+        // before the settings UI receives its save acknowledgement.
+        AppConfig.SaveConfig();
         if (!doNotRestart) manager.RestartIfRunning();
 
-        return "";
+        return JsonConvert.SerializeObject(new { field = d.Field, request_id = d.RequestId, saved = true });
     }
 }

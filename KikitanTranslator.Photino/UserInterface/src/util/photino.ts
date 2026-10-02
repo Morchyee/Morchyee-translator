@@ -5,6 +5,8 @@ let recognitionCallback: ((r: string, t: string, f: boolean) => void) | null = n
 let stateCallback: ((state: app_state) => void) | null = null;
 let microphoneChangedCallback: (() => void) | null = null;
 let notificationCallback: ((msg: string, level: number) => void) | null = null;
+let nextConfigRequest = 0;
+const configSavedCallbacks = new Set<(field: string, requestId: number) => void>();
 
 export function init() {
     // @ts-ignore
@@ -30,6 +32,10 @@ export function init() {
         }
 
         const data = JSON.parse(response.data);
+        if (response.method === "update_config" && data.saved) {
+            configSavedCallbacks.forEach(callback => callback(data.field, data.request_id));
+            return;
+        }
         if (response.method == "recognition") {
             recognitionCallback?.(data.transcription, data.translation, data.final);
 
@@ -51,11 +57,13 @@ export function init() {
 }
 
 export function setConfig(field: string, value: any) {
+    const requestId = ++nextConfigRequest;
     // @ts-ignore
     window.external.sendMessage(JSON.stringify({
         method: "update_config",
-        data: JSON.stringify({field, value})
+        data: JSON.stringify({field, value, request_id: requestId})
     }));
+    return requestId;
 }
 
 export async function fetchURL(url: string): Promise<string> {
@@ -132,6 +140,15 @@ export function registerMicrophoneChangedCallback(callback: () => void) {
 
 export function registerNotificationCallback(callback: (msg: string, level: number) => void) {
     notificationCallback = callback;
+    return () => { if (notificationCallback === callback) notificationCallback = null; };
+}
+export function registerConfigSavedCallback(callback: (field: string, requestId: number) => void) {
+    configSavedCallbacks.add(callback);
+    return () => { configSavedCallbacks.delete(callback); };
+}
+export function showSubtitleAppearance() {
+    // @ts-ignore
+    window.external.sendMessage(JSON.stringify({method: "control", data: "APPEARANCE"}));
 }
 export function showSubtitles() {
     // @ts-ignore

@@ -399,6 +399,11 @@ public class Manager : IDisposable
         lock (_lifecycleLock) { if (!_disposed) StartSubtitleWindow(); }
         _subtitleWriter.Command("show");
     }
+    public void ShowSubtitleAppearance()
+    {
+        lock (_lifecycleLock) { if (!_disposed) StartSubtitleWindow(); }
+        _subtitleWriter.Command("appearance");
+    }
     public void Dispose()
     {
         lock (_lifecycleLock)
