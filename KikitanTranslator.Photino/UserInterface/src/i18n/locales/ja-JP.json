@@ -1,4 +1,7 @@
 {
+  "common.opening": "Desktop Translator を開いています…",
+  "speech.language": "認識する言語",
+  "speech.languageHelp": "「翻訳」の音声の言語と共通です。",
   "navigation.translation": "翻訳",
   "navigation.speech": "音声認識",
   "navigation.subtitles": "字幕",
@@ -90,6 +93,7 @@
   "credential.draftHelp": "入力内容は設定画面を閉じるまで保持されます。キーを保存すると安全に保管されます。",
   "credential.saving": "保存中…",
   "credential.save": "キーを保存",
+  "credential.removing": "削除中…",
   "credential.remove": "保存済みキーを削除",
   "credential.storageHelp": "保存の完了は、プロバイダーへの接続確認ではありません。",
   "credential.failed": "保存を確認できませんでした。上のメッセージを確認して再試行してください。",

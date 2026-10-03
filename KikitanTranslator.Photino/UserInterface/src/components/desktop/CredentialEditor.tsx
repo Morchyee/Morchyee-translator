@@ -22,8 +22,8 @@ export default function CredentialEditor({configured, disabled, draft, onEdit, o
             helperText={t("credential.draftHelp")}
             onKeyDown={e => {if (e.key === "Enter" && draft.value.trim() && !pending && !disabled) onSave(draft.value.trim());}}/>
         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-            <Button variant="contained" disabled={!draft.value.trim() || disabled || pending} onClick={() => onSave(draft.value.trim())}>{pending ? t("credential.saving") : t("credential.save")}</Button>
-            <Button disabled={!configured || disabled || pending} onClick={() => onSave("")}>{t("credential.remove")}</Button>
+            <Button variant="contained" disabled={!draft.value.trim() || disabled || pending} onClick={() => onSave(draft.value.trim())}>{pending && draft.operation === "save" ? t("credential.saving") : t("credential.save")}</Button>
+            <Button disabled={!configured || disabled || pending} onClick={() => onSave("")}>{pending && draft.operation === "remove" ? t("credential.removing") : t("credential.remove")}</Button>
         </Stack>
         {draft.message && <Alert severity={draft.severity} role="status">{t(draft.message)}</Alert>}
         <Typography variant="body2" color="text.secondary">{t("credential.storageHelp")}</Typography>

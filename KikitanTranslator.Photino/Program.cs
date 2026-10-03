@@ -31,7 +31,13 @@ public class Program
         var exeDir = AppContext.BaseDirectory;
         Directory.SetCurrentDirectory(exeDir);
         PhotinoServer.CreateStaticFileServer(args, out string baseUrl).RunAsync();
-        string appUrl = $"{baseUrl}/index.html";
+        // WebView can reuse a cached index from an older build at the same localhost URL.
+        // Fingerprint frontend content independently of product/release version numbers.
+        var frontendIndex = Path.Combine(exeDir, "wwwroot", "index.html");
+        var frontendId = File.Exists(frontendIndex)
+            ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(frontendIndex)))
+            : "";
+        string appUrl = $"{baseUrl}/index.html?ui={frontendId}";
 #endif
         bool noUI = args.Contains("--no-ui");
         

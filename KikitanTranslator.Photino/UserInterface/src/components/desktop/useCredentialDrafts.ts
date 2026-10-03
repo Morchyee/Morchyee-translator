@@ -27,11 +27,13 @@ export function useCredentialDrafts(failures: number) {
         dispatch({type: "failed"});
     }, [failures]);
     function save(field: string, value: string) {
-        if (drafts[field]?.requestId != null) return;
+        // The timer ref updates immediately, before React commits the pending state.
+        if (timers.current.has(field)) return;
         const requestId = setConfig(field, value);
         dispatch({type: "saving", field, requestId, operation: value ? "save" : "remove"});
         clearTimer(field);
         const timer = window.setTimeout(() => {
+            if (timers.current.get(field)?.requestId !== requestId) return;
             timers.current.delete(field);
             dispatch({type: "timeout", field, requestId});
         }, 10000);

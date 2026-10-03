@@ -1,4 +1,7 @@
 {
+  "common.opening": "正在打开 Desktop Translator…",
+  "speech.language": "识别语言",
+  "speech.languageHelp": "与“翻译”页面的源语言保持一致。",
   "navigation.translation": "翻译",
   "navigation.speech": "语音识别",
   "navigation.subtitles": "字幕",
@@ -90,6 +93,7 @@
   "credential.draftHelp": "草稿会保留至关闭设置。保存后密钥才会安全存储。",
   "credential.saving": "正在保存…",
   "credential.save": "保存密钥",
+  "credential.removing": "正在移除…",
   "credential.remove": "移除已保存的密钥",
   "credential.storageHelp": "保存成功仅表示已存储，不代表服务连接已验证。",
   "credential.failed": "保存未确认。请查看上方提示后重试。",

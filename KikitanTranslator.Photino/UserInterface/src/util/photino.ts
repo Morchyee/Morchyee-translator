@@ -132,6 +132,7 @@ export function registerRecognitionCallback(callback: (r: string, t: string, f: 
 
 export function registerStateCallback(callback: (state: app_state) => void) {
     stateCallback = callback;
+    return () => { if (stateCallback === callback) stateCallback = null; };
 }
 
 export function registerMicrophoneChangedCallback(callback: () => void) {

@@ -1,4 +1,7 @@
 {
+  "common.opening": "Opening Desktop Translator…",
+  "speech.language": "Recognition language",
+  "speech.languageHelp": "Uses the same source language as Translation.",
   "navigation.translation": "Translation",
   "navigation.speech": "Speech recognition",
   "navigation.subtitles": "Subtitles",
@@ -90,6 +93,7 @@
   "credential.draftHelp": "Drafts stay while settings are open. Save to keep a key securely.",
   "credential.saving": "Saving…",
   "credential.save": "Save key",
+  "credential.removing": "Removing…",
   "credential.remove": "Remove saved key",
   "credential.storageHelp": "Saving confirms storage, not provider access.",
   "credential.failed": "Save was not confirmed. Check the message above and try again.",
